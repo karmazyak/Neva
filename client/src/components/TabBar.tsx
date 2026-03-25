@@ -1,5 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { MessageCircle, Sparkles, Bot, User } from 'lucide-react'
+import { useChatStore } from '../stores/chatStore'
 
 const tabs = [
   { icon: MessageCircle, label: 'Chats', path: '/' },
@@ -11,10 +12,13 @@ const tabs = [
 export default function TabBar() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { activeChat } = useChatStore()
 
-  // Hide tab bar when inside a chat conversation (mobile)
+  // Hide tab bar when inside a chat conversation (mobile) or on certain pages
   const hideOnPaths = ['/saved']
   if (hideOnPaths.some(p => location.pathname.startsWith(p))) return null
+  // Hide when a chat is open on mobile (chat takes full screen)
+  if (location.pathname === '/' && activeChat) return null
 
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-bg-secondary border-t border-border safe-area-bottom">

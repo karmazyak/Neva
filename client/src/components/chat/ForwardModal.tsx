@@ -37,7 +37,7 @@ export default function ForwardModal({ messageIds, onClose }: ForwardModalProps)
           <div className="flex items-center gap-2">
             <Share2 size={18} className="text-accent" />
             <h3 className="font-semibold text-text-primary">
-              Forward{count > 1 ? ` ${count} messages` : ''} to...
+              Переслать{count > 1 ? ` ${count} сообщений` : ''} в...
             </h3>
           </div>
           <button onClick={onClose} className="text-text-secondary hover:text-text-primary">
@@ -64,7 +64,7 @@ export default function ForwardModal({ messageIds, onClose }: ForwardModalProps)
                   <div className="text-xs text-text-secondary">{chat.type}</div>
                 </div>
                 {isSending && <Loader2 size={16} className="animate-spin text-accent" />}
-                {isSent && <span className="text-xs text-green-400">Sent</span>}
+                {isSent && <span className="text-xs text-green-400">Отправлено</span>}
               </button>
             )
           })}

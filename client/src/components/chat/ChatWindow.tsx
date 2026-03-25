@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { Share2, X } from 'lucide-react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useChatStore } from '../../stores/chatStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useWebSocket } from '../../hooks/useWebSocket'
@@ -25,7 +26,7 @@ interface ChatWindowProps {
   onToggleContextPanel?: () => void
 }
 
-export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleContextPanel }: ChatWindowProps) {
+const ChatWindow = forwardRef(function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleContextPanel }: ChatWindowProps, ref: any) {
   const { messages, chats, addMessage, typingUsers, ghostLayerEnabled, toggleGhostLayer } = useChatStore()
   const { user } = useAuthStore()
   const token = localStorage.getItem('token')
@@ -34,12 +35,17 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const [showAgentPanel, setShowAgentPanel] = useState(false)
   const [hasAgent, setHasAgent] = useState(false)
-  const inputRef = useRef<{ insertText: (text: string) => void; setEditMode: (msgId: string, content: string) => void } | null>(null)
+  const inputRef = useRef<{ insertText: (text: string) => void; setEditMode: (msgId: string, content: string) => void; setReplyMode: (msg: { id: string; senderName: string; content: string; type: string }) => void; clearReply: () => void } | null>(null)
+  const [replyingTo, setReplyingTo] = useState<{ id: string; senderName: string; content: string; type: string } | null>(null)
   const [messageActionState, setMessageActionState] = useState<{ text: string; position: { x: number; y: number } } | null>(null)
   const [tgMenuState, setTgMenuState] = useState<{ id: string; text: string; isOwn: boolean; position: { x: number; y: number }; messageType?: string } | null>(null)
   const [forwardingMessageIds, setForwardingMessageIds] = useState<string[]>([])
   const [selectMode, setSelectMode] = useState(false)
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set())
+
+  useImperativeHandle(ref, () => ({
+    insertText: (text: string) => inputRef.current?.insertText(text),
+  }))
 
   // New feature states
   const [showSearch, setShowSearch] = useState(false)
@@ -74,11 +80,23 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
     })
   }, [chatMessages.length, user?.id])
 
+  const sendMessageOptimistic = useChatStore((s) => s.sendMessageOptimistic)
+
   const handleSend = async (content: string, type?: string, metadata?: Record<string, any>) => {
     if (!content.trim() && type !== 'media_group') return
     try {
-      const message = await api.sendMessage({ chatId, content, type: type || 'text', metadata })
-      addMessage(message)
+      // Use optimistic send for text messages
+      if (type === 'text' || !type) {
+        await sendMessageOptimistic(chatId, content, type || 'text', replyingTo?.id, metadata)
+      } else {
+        // Non-text (images, files, media_group) — standard send
+        const message = await api.sendMessage({
+          chatId, content, type: type || 'text', metadata,
+          ...(replyingTo ? { replyToId: replyingTo.id } : {}),
+        })
+        addMessage(message)
+      }
+      setReplyingTo(null)
     } catch (err) { console.error('Failed to send message:', err) }
   }
 
@@ -105,8 +123,9 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
   const handleReply = (messageId: string) => {
     const msg = chatMessages.find(m => m.id === messageId)
     if (!msg) return
-    const quoted = msg.content.split('\n').map((l: string) => `> ${l}`).join('\n')
-    inputRef.current?.insertText(quoted + '\n')
+    const replyData = { id: msg.id, senderName: msg.senderName, content: msg.content, type: msg.type }
+    setReplyingTo(replyData)
+    inputRef.current?.setReplyMode(replyData)
   }
 
   const handleInsertReply = (text: string) => { inputRef.current?.insertText(text) }
@@ -195,11 +214,10 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
 
       {showAgentPanel && <AgentToggle chatId={chatId} onClose={() => setShowAgentPanel(false)} />}
 
-      {/* Contact context for private chats */}
-      {chat?.type === 'private' && <ContactContextCard chatId={chatId} />}
+      {/* Contact context for private chats — hidden */}
 
-      {/* Messages */}
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-2 space-y-1" style={{
+      {/* Messages — Virtualized for performance */}
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-2" style={{
         backgroundImage: 'radial-gradient(circle at 20% 50%, rgba(82, 136, 193, 0.05) 0%, transparent 50%)',
       }}>
         {chatMessages.length === 0 && !hasAgent && (
@@ -208,35 +226,48 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
               <span className="text-3xl">💬</span>
             </div>
             <p className="text-text-secondary text-sm max-w-[280px]">
-              Start chatting! Tip: click <strong className="text-accent">⋮</strong> → <strong className="text-accent">Add AI Agent</strong> to let AI reply on your behalf.
+              Начните общение! Совет: нажмите <strong className="text-accent">⋮</strong> → <strong className="text-accent">AI Агент</strong>, чтобы ИИ отвечал за вас.
             </p>
           </div>
         )}
 
-        {chatMessages.map((msg, i) => {
-          const prevMsg = chatMessages[i - 1]
-          const showAvatar = !prevMsg || prevMsg.senderId !== msg.senderId || msg.visibility === 'ghost'
-          const isOwn = msg.senderId === user?.id
+        {chatMessages.length > 0 && (
+          <div className="space-y-1">
+            {chatMessages.map((msg, i) => {
+              const prevMsg = chatMessages[i - 1]
+              const showAvatar = !prevMsg || prevMsg.senderId !== msg.senderId || msg.visibility === 'ghost'
+              const isOwn = msg.senderId === user?.id
+              const isOptimistic = (msg as any)._optimistic
+              const isFailed = msg.status === 'failed'
 
-          return (
-            <div key={msg.id} id={`msg-${msg.id}`} className="transition-colors duration-500">
-              <MessageBubble
-                message={msg} isOwn={isOwn} showAvatar={showAvatar}
-                onAction={handleAction}
-                onContextMenu={handleMessageContextMenu}
-                onAIAction={handleAIAction}
-                onReply={handleReply}
-                onEdit={handleEditMessage}
-                onForward={handleForwardMessage}
-                onReaction={handleReaction}
-                onSave={handleSaveMessage}
-                selectMode={selectMode}
-                selected={selectedMessages.has(msg.id)}
-                onToggleSelect={handleToggleSelect}
-              />
-            </div>
-          )
-        })}
+              return (
+                <div key={msg.id} id={`msg-${msg.id}`} className={`transition-colors duration-500 ${isOptimistic && !isFailed ? 'opacity-70' : ''} ${isFailed ? 'opacity-50' : ''}`}>
+                  <MessageBubble
+                    message={msg} isOwn={isOwn} showAvatar={showAvatar}
+                    onAction={handleAction}
+                    onContextMenu={handleMessageContextMenu}
+                    onAIAction={handleAIAction}
+                    onReply={handleReply}
+                    onEdit={handleEditMessage}
+                    onForward={handleForwardMessage}
+                    onReaction={handleReaction}
+                    onSave={handleSaveMessage}
+                    selectMode={selectMode}
+                    selected={selectedMessages.has(msg.id)}
+                    onToggleSelect={handleToggleSelect}
+                    replyToMessage={msg.replyToId ? chatMessages.find(m => m.id === msg.replyToId) : undefined}
+                    onScrollToMessage={scrollToMessage}
+                  />
+                  {isFailed && (
+                    <div className="text-xs text-red-400 text-right pr-2 -mt-1">
+                      Не отправлено. <button className="underline hover:text-red-300" onClick={() => handleSend(msg.content)}>Повторить</button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
 
         {typingList.length > 0 && (
           <div className="flex items-center gap-2 py-2 px-4">
@@ -245,7 +276,7 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
               <span className="w-2 h-2 bg-text-secondary rounded-full" />
               <span className="w-2 h-2 bg-text-secondary rounded-full" />
             </div>
-            <span className="text-sm text-text-secondary">{typingList.join(', ')} typing...</span>
+            <span className="text-sm text-text-secondary">{typingList.join(', ')} печатает...</span>
           </div>
         )}
 
@@ -255,12 +286,12 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
       {selectMode ? (
         <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-bg-secondary">
           <button onClick={handleExitSelectMode} className="flex items-center gap-2 text-text-secondary hover:text-text-primary transition-colors">
-            <X size={18} /><span className="text-sm">Cancel</span>
+            <X size={18} /><span className="text-sm">Отмена</span>
           </button>
-          <span className="text-sm text-text-secondary">{selectedMessages.size} selected</span>
+          <span className="text-sm text-text-secondary">{selectedMessages.size} выбрано</span>
           <button onClick={handleBatchForward} disabled={selectedMessages.size === 0}
             className="flex items-center gap-2 text-accent hover:text-accent-hover transition-colors disabled:opacity-40">
-            <span className="text-sm font-medium">Forward</span><Share2 size={16} />
+            <span className="text-sm font-medium">Переслать</span><Share2 size={16} />
           </button>
         </div>
       ) : (
@@ -270,6 +301,8 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
           chatId={chatId}
           isChannel={chat?.type === 'channel'}
           canPost={chat?.type !== 'channel' || chat?.myRole === 'admin'}
+          replyingTo={replyingTo}
+          onCancelReply={() => setReplyingTo(null)}
         />
       )}
 
@@ -286,7 +319,7 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
           onPin={() => { handlePinMessage(tgMenuState.id); setTgMenuState(null) }}
           onSave={() => { handleSaveMessage(tgMenuState.id); setTgMenuState(null) }}
           onDelete={async () => {
-            if (!confirm('Delete this message?')) { setTgMenuState(null); return }
+            if (!confirm('Удалить это сообщение?')) { setTgMenuState(null); return }
             try { await api.deleteMessage(tgMenuState.id) } catch {}
             setTgMenuState(null)
           }}
@@ -295,7 +328,7 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
 
       {messageActionState && (
         <MessageActions messageText={messageActionState.text} position={messageActionState.position}
-          onClose={() => setMessageActionState(null)} onInsertReply={handleInsertReply} chatContext={getChatContext()} />
+          onClose={() => setMessageActionState(null)} onInsertReply={handleInsertReply} chatContext={getChatContext()} chatId={chatId} />
       )}
 
       {forwardingMessageIds.length > 0 && (
@@ -308,4 +341,6 @@ export default function ChatWindow({ chatId, onBack, contextPanelOpen, onToggleC
       )}
     </div>
   )
-}
+})
+
+export default ChatWindow

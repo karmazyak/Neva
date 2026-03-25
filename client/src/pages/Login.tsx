@@ -16,7 +16,7 @@ export default function Login() {
     setError('')
 
     if (!login.trim() || !password) {
-      setError('Please enter username and password')
+      setError('Введите имя пользователя и пароль')
       return
     }
 
@@ -25,7 +25,7 @@ export default function Login() {
       await doLogin(login, password)
       navigate('/')
     } catch (err: any) {
-      setError(err.message || 'Login failed')
+      setError(err.message || 'Ошибка входа')
     } finally {
       setLoading(false)
     }
@@ -58,18 +58,22 @@ export default function Login() {
 
           <input
             type="text"
-            placeholder="Username or email"
+            placeholder="Имя пользователя или email"
             value={login}
             onChange={(e) => setLogin(e.target.value)}
+            autoComplete="username"
+            name="username"
             className="w-full bg-bg-input border border-[rgba(255,255,255,0.07)] rounded-xl px-4 py-3.5 text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent transition-colors text-sm"
             required
           />
 
           <input
             type="password"
-            placeholder="Password"
+            placeholder="Пароль"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            name="password"
             className="w-full bg-bg-input border border-[rgba(255,255,255,0.07)] rounded-xl px-4 py-3.5 text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent transition-colors text-sm"
             required
           />
@@ -79,14 +83,14 @@ export default function Login() {
             disabled={loading}
             className="w-full neva-gradient text-white font-semibold py-3.5 rounded-xl transition-opacity disabled:opacity-50 text-sm shadow-[0_4px_20px_rgba(44,196,196,0.3)] hover:opacity-90 mt-1"
           >
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? 'Вход...' : 'Войти'}
           </button>
         </form>
 
         <p className="text-center text-text-secondary text-sm mt-6">
-          Don't have an account?{' '}
+          Нет аккаунта?{' '}
           <Link to="/register" className="text-accent hover:text-accent-hover transition-colors">
-            Sign Up
+            Зарегистрироваться
           </Link>
         </p>
       </div>

@@ -21,7 +21,7 @@ class ApiClient {
     return this.token
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, options: RequestInit = {}, requestOptions?: { silent?: boolean }): Promise<T> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...((options.headers as Record<string, string>) || {}),
@@ -32,6 +32,8 @@ class ApiClient {
       headers['Authorization'] = `Bearer ${token}`
     }
 
+    const silent = requestOptions?.silent
+
     let response: Response
     try {
       response = await fetch(`${API_BASE}${path}`, {
@@ -39,19 +41,21 @@ class ApiClient {
         headers,
       })
     } catch (err) {
-      showToast('error', 'Network error — server is unavailable')
+      if (!silent) showToast('error', 'Network error — server is unavailable')
       throw new Error('Network error')
     }
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Request failed' }))
       const message = error.error || 'Request failed'
-      if (response.status >= 500) {
-        showToast('error', `Server error: ${message}`)
-      } else if (response.status === 401) {
-        // Don't toast for auth errors (handled by auth flow)
-      } else if (response.status !== 404) {
-        showToast('error', message)
+      if (!silent) {
+        if (response.status >= 500) {
+          showToast('error', `Server error: ${message}`)
+        } else if (response.status === 401) {
+          // Don't toast for auth errors (handled by auth flow)
+        } else if (response.status !== 404) {
+          showToast('error', message)
+        }
       }
       throw new Error(message)
     }
@@ -116,6 +120,11 @@ class ApiClient {
 
   async searchUsers(query: string) {
     return this.request<any[]>(`/chats/users/search?q=${encodeURIComponent(query)}`)
+  }
+
+  // Delta sync — get changes since a timestamp
+  async syncMessages(since: number) {
+    return this.request<{ messages: { new: any[]; edited: any[] }; timestamp: number }>(`/chats/sync?since=${since}`)
   }
 
   // Messages
@@ -225,7 +234,7 @@ class ApiClient {
   }
 
   // AI Direct Chat
-  async aiChat(data: { message: string; agentId?: string; model?: string; clearHistory?: boolean; autopilot?: boolean }) {
+  async aiChat(data: { message: string; agentId?: string; model?: string; clearHistory?: boolean; autopilot?: boolean; mission?: boolean; missionChatId?: string }) {
     return this.request<{
       response: string
       model: string
@@ -243,6 +252,12 @@ class ApiClient {
         content?: string
         timestamp: string
       }[]
+      missionPlan?: {
+        goal: string
+        strategy: string
+        steps: number
+        riskLevel: string
+      }
       historyLength: number
     }>('/ai/chat', {
       method: 'POST',
@@ -372,25 +387,25 @@ class ApiClient {
     })
   }
 
-  async analyzeMessage(data: { text: string; action: string; chatContext?: string }) {
+  async analyzeMessage(data: { text: string; action: string; chatContext?: string; chatId?: string }) {
     return this.request<{ result: string | string[] }>('/ai/tools/analyze', {
       method: 'POST',
       body: JSON.stringify(data),
-    })
+    }, { silent: true })
   }
 
   async getChatBriefing(data: { chatId: string; messageCount?: number }) {
     return this.request<{ briefing: string | null }>('/ai/tools/briefing', {
       method: 'POST',
       body: JSON.stringify(data),
-    })
+    }, { silent: true })
   }
 
-  async getChatContext(data: { chatId: string; query?: string }) {
-    return this.request<{ result: any; type: string }>('/ai/tools/context', {
+  async getChatContext(data: { chatId: string; query?: string; forceRefresh?: boolean }) {
+    return this.request<{ result: any; type: string; cached?: boolean }>('/ai/tools/context', {
       method: 'POST',
       body: JSON.stringify(data),
-    })
+    }, { silent: true })
   }
 
   // Style — writing style cloning
@@ -544,12 +559,92 @@ class ApiClient {
 
   // Meeting summary
   async getMeetingSummary(chatId: string, messageLimit?: number) {
-    return this.request<{ summary: string | null }>('/ai/tools/meeting-summary', { method: 'POST', body: JSON.stringify({ chatId, messageLimit }) })
+    return this.request<{ summary: string | null }>('/ai/tools/meeting-summary', { method: 'POST', body: JSON.stringify({ chatId, messageLimit }) }, { silent: true })
   }
 
   // Contact context
   async getContactContext(chatId: string) {
-    return this.request<{ context: string | null; lastInteraction?: string }>('/ai/tools/contact-context', { method: 'POST', body: JSON.stringify({ chatId }) })
+    return this.request<{ context: string | null; lastInteraction?: string }>('/ai/tools/contact-context', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
+  }
+
+  // Proactive Nudges — morning briefing
+  async getNudges() {
+    return this.request<{
+      nudges: Array<{ chatId: string; chatName: string; type: string; text: string; priority: string }>
+      summary: string | null
+    }>('/ai/tools/nudges', { method: 'POST' }, { silent: true })
+  }
+
+  // Person Context — relationship intelligence
+  async getPersonContext(chatId: string) {
+    return this.request<{
+      person: {
+        name: string
+        username?: string
+        communicationStyle: string
+        avgResponseTime: string
+        activeHours: string
+        sharedTopics: string[]
+        unresolvedItems: string[]
+        moodTrend: string
+        moodNote: string
+        totalMessages: number
+      } | null
+    }>('/ai/tools/person-context', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
+  }
+
+  // Tone Advisor — check message tone
+  async checkTone(chatId: string, text: string) {
+    return this.request<{ needsWarning: boolean; warning?: string; suggestion?: string }>('/ai/tools/tone-check', { method: 'POST', body: JSON.stringify({ chatId, text }) }, { silent: true })
+  }
+
+  // Conversation Simulation (v2: persona-based with branching + confidence)
+  async simulateChat(chatId: string, userMessage: string, history?: Array<{ role: string; content: string }>, branching?: boolean) {
+    return this.request<{
+      response: string
+      personName: string
+      confidence?: number
+      branches?: Array<{ response: string; probability: number; label: string }>
+      innerMonologue?: string
+      hasPersona?: boolean
+    }>('/ai/tools/simulate', { method: 'POST', body: JSON.stringify({ chatId, userMessage, history, branching }) }, { silent: true })
+  }
+
+  // Strategic Mission Plan — get strategies before mission launch
+  async getMissionPlan(chatId: string, goal: string) {
+    return this.request<{
+      context: { personName: string; relationshipType: string; mood: string; communicationStyle: string; persona: any | null }
+      strategies: Array<{
+        id: string; name: string; description: string; draftMessage: string
+        simulatedResponse: string; successRate: string; confidence: number
+        recommended: boolean; pastExperience: string | null
+      }>
+      lessonsFromPast: string | null
+    }>('/ai/tools/mission-plan', { method: 'POST', body: JSON.stringify({ chatId, goal }) }, { silent: true })
+  }
+
+  // Set active goal for tone advisor
+  async setGoal(chatId: string, goal: string, strategy: string) {
+    return this.request<{ ok: boolean }>('/ai/tools/set-goal', { method: 'POST', body: JSON.stringify({ chatId, goal, strategy }) })
+  }
+
+  // Mood check for family/friend chats
+  async checkMood(chatId: string) {
+    return this.request<{ mood: string; note: string | null; confidence: number }>('/ai/tools/mood-check', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
+  }
+
+  // Persona Profile — get/extract digital twin profile
+  async getPersonaProfile(chatId: string) {
+    return this.request<{
+      persona: {
+        name: string
+        linguistic: { avgMessageLength: string; emojiUsage: string; language: string; formality: number; signaturePatterns: string[] }
+        behavioral: { agreeableness: number; directness: number; humor: string; decisionSpeed: string; conflictStyle: string }
+        currentState: { recentMood: string; activeTopics: string[]; pendingExpectations: string[] }
+        dynamics: { relationshipType: string; powerDynamic: string; sensitiveTopics: string[] }
+      } | null
+      cached: boolean
+    }>('/ai/tools/persona', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
   }
 }
 

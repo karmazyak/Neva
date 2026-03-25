@@ -22,6 +22,8 @@ import {
   Trash2,
 } from 'lucide-react'
 import NevaLogo from '../components/NevaLogo'
+import NotificationSettings from '../components/settings/NotificationSettings'
+import AIValueTracker from '../components/AIValueTracker'
 
 export default function Profile() {
   const navigate = useNavigate()
@@ -258,6 +260,16 @@ export default function Profile() {
             </div>
             <ChevronRight size={16} className="text-text-secondary" />
           </button>
+        </div>
+
+        {/* Notification Settings */}
+        <div className="mx-4 bg-bg-secondary rounded-xl overflow-hidden mb-4 px-4 py-3">
+          <NotificationSettings />
+        </div>
+
+        {/* AI Value Tracker */}
+        <div className="mx-4 mb-4">
+          <AIValueTracker />
         </div>
 
         {/* My Writing Style */}

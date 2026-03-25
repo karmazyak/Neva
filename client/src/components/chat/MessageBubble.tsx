@@ -1,4 +1,4 @@
-import { Check, CheckCheck, Bot, Eye, Play, Pause, Download, Share2, Pencil, Sparkles, SmilePlus, Bookmark, Pin, Timer, X } from 'lucide-react'
+import { Check, CheckCheck, Bot, Eye, Play, Pause, Download, Share2, Pencil, Sparkles, SmilePlus, Bookmark, Pin, Timer, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { renderMarkdown } from '../../lib/markdown'
 import VoicePlayer from './VoicePlayer'
@@ -23,6 +23,13 @@ export interface Reaction {
   reacted: boolean
 }
 
+interface ReplyMessage {
+  id: string
+  content: string
+  type: string
+  senderName: string
+}
+
 interface MessageBubbleProps {
   message: {
     id: string
@@ -36,6 +43,7 @@ interface MessageBubbleProps {
     metadata?: Record<string, any>
     editedAt?: string
     forwardedFrom?: { chatId: string; chatName: string; senderName: string }
+    replyToId?: string
     createdAt: string
     reactions?: Reaction[]
     pinned?: boolean
@@ -55,6 +63,8 @@ interface MessageBubbleProps {
   selected?: boolean
   onToggleSelect?: (messageId: string) => void
   highlightTerms?: string
+  replyToMessage?: ReplyMessage
+  onScrollToMessage?: (messageId: string) => void
 }
 
 const AUDIO_EXTS = ['.webm', '.ogg', '.mp3', '.wav', '.m4a', '.aac']
@@ -161,7 +171,7 @@ function VideoPlayer({ src }: { src: string }) {
   )
 }
 
-function MediaGrid({ media }: { media: MediaItem[] }) {
+function MediaGrid({ media, onImageClick }: { media: MediaItem[]; onImageClick: (index: number) => void }) {
   const count = media.length
 
   const gridClass =
@@ -173,7 +183,6 @@ function MediaGrid({ media }: { media: MediaItem[] }) {
   return (
     <div className={`grid ${gridClass} gap-1 rounded-lg overflow-hidden`}>
       {media.map((item, i) => {
-        // For 3 items, first item spans full width
         const spanFull = count === 3 && i === 0
 
         return (
@@ -193,8 +202,9 @@ function MediaGrid({ media }: { media: MediaItem[] }) {
               <img
                 src={item.url}
                 alt=""
-                className="w-full h-full object-cover cursor-pointer"
+                className="w-full h-full object-cover cursor-zoom-in hover:brightness-90 transition-[filter]"
                 style={{ minHeight: count === 1 ? undefined : '120px' }}
+                onClick={(e) => { e.stopPropagation(); onImageClick(i) }}
               />
             )}
           </div>
@@ -204,12 +214,112 @@ function MediaGrid({ media }: { media: MediaItem[] }) {
   )
 }
 
+function Lightbox({ images, startIndex, onClose }: { images: string[]; startIndex: number; onClose: () => void }) {
+  const [index, setIndex] = useState(startIndex)
+  const [zoom, setZoom] = useState(false)
+  const total = images.length
+
+  const prev = useCallback(() => setIndex(i => (i - 1 + total) % total), [total])
+  const next = useCallback(() => setIndex(i => (i + 1) % total), [total])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      if (e.key === 'ArrowLeft') prev()
+      if (e.key === 'ArrowRight') next()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose, prev, next])
+
+  // Touch swipe
+  const touchStartX = useRef<number | null>(null)
+  const handleTouchStart = (e: React.TouchEvent) => { touchStartX.current = e.touches[0].clientX }
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null) return
+    const dx = e.changedTouches[0].clientX - touchStartX.current
+    if (Math.abs(dx) > 50) { dx < 0 ? next() : prev() }
+    touchStartX.current = null
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[999] bg-black/95 flex flex-col"
+      onClick={onClose}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 flex-shrink-0" onClick={e => e.stopPropagation()}>
+        <span className="text-white/60 text-sm">{index + 1} / {total}</span>
+        <button
+          className="p-2 rounded-full hover:bg-white/10 text-white/70 hover:text-white transition-colors"
+          onClick={onClose}
+        >
+          <X size={24} />
+        </button>
+      </div>
+
+      {/* Image area */}
+      <div
+        className="flex-1 flex items-center justify-center relative overflow-hidden"
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onClick={onClose}
+      >
+        <img
+          key={index}
+          src={images[index]}
+          alt={`${index + 1}`}
+          className={`max-w-[90vw] max-h-[80vh] object-contain select-none transition-transform duration-150 fade-in ${zoom ? 'cursor-zoom-out scale-150' : 'cursor-zoom-in'}`}
+          onClick={e => { e.stopPropagation(); setZoom(z => !z) }}
+          draggable={false}
+        />
+
+        {/* Prev button */}
+        {total > 1 && (
+          <button
+            className="absolute left-3 p-2 rounded-full bg-black/40 hover:bg-black/70 text-white transition-colors"
+            onClick={e => { e.stopPropagation(); prev() }}
+          >
+            <ChevronLeft size={28} />
+          </button>
+        )}
+
+        {/* Next button */}
+        {total > 1 && (
+          <button
+            className="absolute right-3 p-2 rounded-full bg-black/40 hover:bg-black/70 text-white transition-colors"
+            onClick={e => { e.stopPropagation(); next() }}
+          >
+            <ChevronRight size={28} />
+          </button>
+        )}
+      </div>
+
+      {/* Thumbnails strip (if more than 1 image) */}
+      {total > 1 && (
+        <div className="flex-shrink-0 flex justify-center gap-2 py-3 px-4 overflow-x-auto" onClick={e => e.stopPropagation()}>
+          {images.map((src, i) => (
+            <button
+              key={i}
+              onClick={() => { setIndex(i); setZoom(false) }}
+              className={`flex-shrink-0 w-12 h-12 rounded-lg overflow-hidden border-2 transition-all ${i === index ? 'border-white scale-110' : 'border-transparent opacity-50 hover:opacity-80'}`}
+            >
+              <img src={src} alt="" className="w-full h-full object-cover" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥']
 
-export default function MessageBubble({ message, isOwn, showAvatar, onAction, onContextMenu, onAIAction, onReply, onEdit, onForward, onReaction, onSave, selectMode, selected, onToggleSelect, highlightTerms }: MessageBubbleProps) {
+export default function MessageBubble({ message, isOwn, showAvatar, onAction, onContextMenu, onAIAction, onReply, onEdit, onForward, onReaction, onSave, selectMode, selected, onToggleSelect, highlightTerms, replyToMessage, onScrollToMessage }: MessageBubbleProps) {
   const [showQuickReactions, setShowQuickReactions] = useState(false)
   const [imageError, setImageError] = useState(false)
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [lightboxGallery, setLightboxGallery] = useState<{ images: string[]; index: number } | null>(null)
   const time = new Date(message.createdAt).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -243,11 +353,24 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
     // Media group: multiple images/videos with optional caption
     if (message.type === 'media_group') {
       const media = (message.metadata?.media || []) as MediaItem[]
+      // Collect all viewable images (type 'image' OR file with image URL)
+      const imageUrls = media
+        .filter(m => m.type === 'image' || (m.type === 'file' && isImageUrl(m.url)))
+        .map(m => m.url)
       return (
         <div>
           {media.length > 0 && (
             <div className="max-w-sm">
-              <MediaGrid media={media} />
+              <MediaGrid
+                media={media}
+                onImageClick={(i) => {
+                  const clickedUrl = media[i].url
+                  const imageIndex = imageUrls.indexOf(clickedUrl)
+                  // If image not in gallery (e.g. it's a video), ignore
+                  if (imageIndex < 0) return
+                  setLightboxGallery({ images: imageUrls, index: imageIndex })
+                }}
+              />
             </div>
           )}
           {message.content && (
@@ -271,40 +394,19 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
     // Image message
     if (message.type === 'image' || (message.type === 'file' && isImageUrl(message.content))) {
       return (
-        <>
-          <div className="max-w-sm">
-            {imageError ? (
-              <p className="text-text-primary whitespace-pre-wrap break-words">{message.content}</p>
-            ) : (
-              <img
-                src={message.content}
-                alt="Shared image"
-                className="rounded-lg max-w-full cursor-zoom-in"
-                onError={() => setImageError(true)}
-                onClick={() => setLightboxSrc(message.content)}
-              />
-            )}
-          </div>
-          {lightboxSrc && (
-            <div
-              className="fixed inset-0 z-[999] bg-black/90 flex items-center justify-center"
-              onClick={() => setLightboxSrc(null)}
-            >
-              <button
-                className="absolute top-4 right-4 text-white/70 hover:text-white"
-                onClick={() => setLightboxSrc(null)}
-              >
-                <X size={32} />
-              </button>
-              <img
-                src={lightboxSrc}
-                alt="Full size"
-                className="max-w-[90vw] max-h-[90vh] rounded-lg object-contain"
-                onClick={e => e.stopPropagation()}
-              />
-            </div>
+        <div className="max-w-sm">
+          {imageError ? (
+            <p className="text-text-primary whitespace-pre-wrap break-words">{message.content}</p>
+          ) : (
+            <img
+              src={message.content}
+              alt="Изображение"
+              className="rounded-lg max-w-full cursor-zoom-in hover:brightness-90 transition-[filter]"
+              onError={() => setImageError(true)}
+              onClick={(e) => { e.stopPropagation(); setLightboxGallery({ images: [message.content], index: 0 }) }}
+            />
           )}
-        </>
+        </div>
       )
     }
 
@@ -333,6 +435,13 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
           <Download size={16} />
           {message.content.split('/').pop() || 'File'}
         </a>
+      )
+    }
+
+    // Guard: if message is still encrypted, show placeholder
+    if (message.content?.startsWith('enc:v1:')) {
+      return (
+        <p className="text-text-secondary italic text-sm">Message cannot be decrypted</p>
       )
     }
 
@@ -368,7 +477,7 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
               </span>
               <span className="text-[10px] text-text-secondary ml-auto flex items-center gap-1">
                 <Eye size={10} />
-                Only you can see this
+                Видите только вы
               </span>
             </div>
 
@@ -405,6 +514,7 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
   }
 
   return (
+    <>
     <div
       className={`flex ${isOwn ? 'justify-end' : 'justify-start'} message-enter items-end ${selectMode ? 'cursor-pointer' : ''} ${selected ? 'bg-accent/10 -mx-4 px-4 rounded-lg' : ''}`}
       onContextMenu={selectMode ? undefined : handleContextMenu}
@@ -452,7 +562,25 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
           {message.forwardedFrom && (
             <div className="flex items-center gap-1 mb-1 text-[11px] text-text-secondary border-l-2 border-accent/40 pl-2">
               <Share2 size={10} className="text-accent" />
-              <span>Forwarded from <strong className="text-accent">{message.forwardedFrom.senderName}</strong></span>
+              <span>Переслано от <strong className="text-accent">{message.forwardedFrom.senderName}</strong></span>
+            </div>
+          )}
+
+          {/* Reply preview */}
+          {replyToMessage && (
+            <div
+              className="mb-1.5 px-2 py-1.5 rounded-lg bg-white/5 border-l-2 border-accent cursor-pointer hover:bg-white/10 transition-colors"
+              onClick={(e) => { e.stopPropagation(); onScrollToMessage?.(replyToMessage.id) }}
+            >
+              <div className="text-[11px] font-semibold text-accent truncate">{replyToMessage.senderName}</div>
+              <div className="text-[12px] text-text-secondary truncate max-w-[250px]">
+                {replyToMessage.type === 'image' ? '📷 Фото'
+                  : replyToMessage.type === 'video' ? '🎬 Видео'
+                  : replyToMessage.type === 'voice' ? '🎤 Голосовое'
+                  : replyToMessage.type === 'file' ? '📎 Файл'
+                  : replyToMessage.type === 'media_group' ? '🖼 Медиа'
+                  : replyToMessage.content.slice(0, 100)}
+              </div>
             </div>
           )}
 
@@ -470,7 +598,7 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
                 <button
                   onClick={(e) => { e.stopPropagation(); setShowQuickReactions(!showQuickReactions) }}
                   className="p-1 rounded bg-bg-secondary/80 text-text-secondary hover:text-accent transition-colors"
-                  title="React"
+                  title="Реакция"
                 >
                   <SmilePlus size={12} />
                 </button>
@@ -479,7 +607,7 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
                 <button
                   onClick={(e) => { e.stopPropagation(); onAIAction(message.content, { x: e.clientX, y: e.clientY }) }}
                   className="p-1 rounded bg-bg-secondary/80 text-text-secondary hover:text-accent transition-colors"
-                  title="AI Actions"
+                  title="AI действия"
                 >
                   <Sparkles size={12} />
                 </button>
@@ -488,7 +616,7 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
                 <button
                   onClick={(e) => { e.stopPropagation(); onReply(message.id) }}
                   className="p-1 rounded bg-bg-secondary/80 text-text-secondary hover:text-accent transition-colors"
-                  title="Reply"
+                  title="Ответить"
                 >
                   <Share2 size={12} className="scale-x-[-1]" />
                 </button>
@@ -497,7 +625,7 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
                 <button
                   onClick={(e) => { e.stopPropagation(); onEdit(message.id, message.content) }}
                   className="p-1 rounded bg-bg-secondary/80 text-text-secondary hover:text-accent transition-colors"
-                  title="Edit"
+                  title="Изменить"
                 >
                   <Pencil size={12} />
                 </button>
@@ -506,7 +634,7 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
                 <button
                   onClick={(e) => { e.stopPropagation(); onForward(message.id) }}
                   className="p-1 rounded bg-bg-secondary/80 text-text-secondary hover:text-accent transition-colors"
-                  title="Forward"
+                  title="Переслать"
                 >
                   <Share2 size={12} />
                 </button>
@@ -567,7 +695,7 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
             {message.saved && <Bookmark size={10} className="text-yellow-400" />}
             {message.metadata?.expiresAt && <Timer size={10} className="text-orange-400" />}
             {message.editedAt && (
-              <span className="text-[10px] text-text-time italic">edited</span>
+              <span className="text-[10px] text-text-time italic">ред.</span>
             )}
             <span className="text-[11px] text-text-time">{time}</span>
             {isOwn && (
@@ -583,5 +711,15 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
         </div>
       </div>
     </div>
+
+    {/* Gallery lightbox (media_group) — rendered outside bubble to avoid z-index issues */}
+    {lightboxGallery && (
+      <Lightbox
+        images={lightboxGallery.images}
+        startIndex={lightboxGallery.index}
+        onClose={() => setLightboxGallery(null)}
+      />
+    )}
+    </>
   )
 }

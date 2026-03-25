@@ -23,6 +23,11 @@ export const chats = sqliteTable('chats', {
   name: text('name'),
   description: text('description'),
   avatar: text('avatar'),
+  // Denormalized last message fields (updated by DB trigger on INSERT)
+  lastMessageId: text('last_message_id'),
+  lastMessageAt: integer('last_message_at', { mode: 'timestamp' }),
+  lastMessagePreview: text('last_message_preview'),
+  lastMessageSenderId: text('last_message_sender_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
 })
 
@@ -32,6 +37,7 @@ export const chatMembers = sqliteTable('chat_members', {
   userId: text('user_id').notNull().references(() => users.id),
   role: text('role', { enum: ['admin', 'member', 'viewer'] }).notNull().default('member'),
   disappearTimer: integer('disappear_timer'),
+  relationshipType: text('relationship_type', { enum: ['family', 'friend', 'work', 'client', 'acquaintance', 'other'] }),
   joinedAt: integer('joined_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
 })
 
@@ -257,6 +263,24 @@ export const agentReviews = sqliteTable('agent_reviews', {
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
 })
 
+// Mission history — learn from past missions
+export const missionHistory = sqliteTable('mission_history', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  chatId: text('chat_id'),
+  contactName: text('contact_name'),
+  goal: text('goal').notNull(),
+  strategy: text('strategy'),
+  plan: text('plan', { mode: 'json' }).$type<Record<string, any>>(),
+  result: text('result', { enum: ['success', 'partial', 'failed', 'aborted'] }).notNull(),
+  conversationLog: text('conversation_log'),
+  lessonsLearned: text('lessons_learned'), // AI-generated insight
+  replanCount: integer('replan_count').default(0),
+  messagesSent: integer('messages_sent').default(0),
+  durationMs: integer('duration_ms'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
 export type User = typeof users.$inferSelect
 export type Chat = typeof chats.$inferSelect
 export type ChatMember = typeof chatMembers.$inferSelect
@@ -278,3 +302,4 @@ export type SavedMessage = typeof savedMessages.$inferSelect
 export type ChatFolder = typeof chatFolders.$inferSelect
 export type ScheduledMessage = typeof scheduledMessages.$inferSelect
 export type AgentReview = typeof agentReviews.$inferSelect
+export type MissionHistory = typeof missionHistory.$inferSelect

@@ -9,8 +9,25 @@ export interface ToastMessage {
 
 let toastListeners: ((toast: ToastMessage) => void)[] = []
 
+// Deduplication: track recently shown messages to prevent spam
+const recentMessages = new Map<string, number>()
+const DEDUP_WINDOW_MS = 3000 // same message can't appear more than once per 3 seconds
+
 export function showToast(type: ToastMessage['type'], message: string) {
-  const toast: ToastMessage = { id: Date.now().toString(), type, message }
+  const key = `${type}:${message}`
+  const now = Date.now()
+  const lastShown = recentMessages.get(key)
+  if (lastShown && now - lastShown < DEDUP_WINDOW_MS) return // suppress duplicate
+
+  recentMessages.set(key, now)
+  // Clean up old entries periodically
+  if (recentMessages.size > 50) {
+    for (const [k, t] of recentMessages) {
+      if (now - t > DEDUP_WINDOW_MS) recentMessages.delete(k)
+    }
+  }
+
+  const toast: ToastMessage = { id: now.toString() + Math.random(), type, message }
   toastListeners.forEach((fn) => fn(toast))
 }
 
@@ -19,7 +36,11 @@ export default function ToastContainer() {
 
   useEffect(() => {
     const handler = (toast: ToastMessage) => {
-      setToasts((prev) => [...prev, toast])
+      setToasts((prev) => {
+        // Keep max 3 toasts visible at once
+        const next = [...prev, toast]
+        return next.slice(-3)
+      })
       setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== toast.id))
       }, 4000)
@@ -33,7 +54,7 @@ export default function ToastContainer() {
   if (toasts.length === 0) return null
 
   return (
-    <div className="fixed top-4 right-4 z-50 space-y-2 max-w-sm">
+    <div className="fixed z-50 space-y-2 bottom-16 left-4 right-4 md:bottom-auto md:left-auto md:top-4 md:right-4 md:max-w-sm">
       {toasts.map((toast) => {
         const Icon = toast.type === 'error' ? AlertCircle : toast.type === 'success' ? CheckCircle : Info
         const colors = toast.type === 'error'

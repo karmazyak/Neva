@@ -20,6 +20,7 @@ interface Message {
   reactions?: { emoji: string; count: number; userIds: string[]; reacted: boolean }[]
   pinned?: boolean
   saved?: boolean
+  _optimistic?: boolean  // Optimistic update flag (client-only)
 }
 
 interface Chat {
@@ -38,6 +39,7 @@ interface ChatState {
   messages: Record<string, Message[]>
   typingUsers: Record<string, { userId: string; username: string; timeout: ReturnType<typeof setTimeout> }>
   ghostLayerEnabled: Record<string, boolean>
+  lastSyncTimestamp: number  // Unix timestamp of last successful sync
   loadChats: () => Promise<void>
   setActiveChat: (chatId: string | null) => void
   loadMessages: (chatId: string, includeGhost?: boolean) => Promise<void>
@@ -50,7 +52,18 @@ interface ChatState {
   addReactionToMessage: (chatId: string, messageId: string, emoji: string, reactUserId: string) => void
   removeReactionFromMessage: (chatId: string, messageId: string, emoji: string, reactUserId: string) => void
   removeMessage: (chatId: string, messageId: string) => void
+  // Optimistic send
+  sendMessageOptimistic: (chatId: string, content: string, type?: string, replyToId?: string, metadata?: Record<string, any>) => Promise<void>
+  // Replace optimistic message with real one
+  replaceOptimisticMessage: (chatId: string, tempId: string, realMessage: Message) => void
+  markMessageFailed: (chatId: string, tempId: string) => void
+  // Delta sync
+  deltaSync: () => Promise<void>
+  // Handle sync batch from WS
+  handleSyncBatch: (messages: Message[]) => void
 }
+
+let tempIdCounter = 0
 
 export const useChatStore = create<ChatState>((set, get) => ({
   chats: [],
@@ -58,6 +71,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: {},
   typingUsers: {},
   ghostLayerEnabled: {},
+  lastSyncTimestamp: parseInt(localStorage.getItem('lastSyncTs') || '0'),
 
   loadChats: async () => {
     const chats = await api.getChats()
@@ -82,14 +96,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addMessage: (message) => {
     set((state) => {
       const chatMessages = state.messages[message.chatId] || []
-      // Avoid duplicates
-      if (chatMessages.find((m) => m.id === message.id)) return state
 
-      // If ghost message and ghost layer is not enabled, don't add to visible list
-      // But still keep it (it was delivered via WS)
+      // If this is a real message replacing an optimistic one, skip duplicate check
+      // Optimistic messages have temp_ prefix IDs
+      const existingIndex = chatMessages.findIndex((m) => m.id === message.id)
+      if (existingIndex >= 0) return state
+
+      // Check if this is a server echo of our optimistic message
+      // Match by content + senderId + chatId within last 10s
+      if (message.senderId === useAuthStore.getState().user?.id) {
+        const optimistic = chatMessages.find(
+          m => m._optimistic && m.content === message.content && m.chatId === message.chatId
+        )
+        if (optimistic) {
+          // Replace optimistic with real
+          return {
+            messages: {
+              ...state.messages,
+              [message.chatId]: chatMessages.map(m =>
+                m.id === optimistic.id ? { ...message, _optimistic: undefined } : m
+              ),
+            },
+          }
+        }
+      }
+
+      // Ghost filter
       const ghostEnabled = state.ghostLayerEnabled[message.chatId] || false
       if (message.visibility === 'ghost' && !ghostEnabled) {
-        // Store it but don't show — it will appear when ghost layer is toggled
         return state
       }
 
@@ -98,7 +132,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         [message.chatId]: [...chatMessages, message],
       }
 
-      // Update last message in chat list (don't update with ghost messages)
       const chats = state.chats.map((chat) => {
         if (chat.id === message.chatId && message.visibility !== 'ghost') {
           return {
@@ -110,7 +143,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return chat
       })
 
-      // Sort chats by last message time
       chats.sort((a, b) => {
         const aTime = a.lastMessage?.createdAt ? new Date(a.lastMessage.createdAt).getTime() : 0
         const bTime = b.lastMessage?.createdAt ? new Date(b.lastMessage.createdAt).getTime() : 0
@@ -118,6 +150,81 @@ export const useChatStore = create<ChatState>((set, get) => ({
       })
 
       return { messages: newMessages, chats }
+    })
+  },
+
+  // ── Optimistic Send ──────────────────────────────────────────────────────
+  sendMessageOptimistic: async (chatId, content, type = 'text', replyToId?, metadata?) => {
+    const user = useAuthStore.getState().user
+    if (!user) return
+
+    const tempId = `temp_${Date.now()}_${++tempIdCounter}`
+
+    // 1. Immediately add to UI
+    const optimisticMessage: Message = {
+      id: tempId,
+      chatId,
+      senderId: user.id,
+      senderName: user.displayName || user.username,
+      senderAvatar: user.avatar || null,
+      content,
+      type,
+      replyToId,
+      status: 'sending',
+      visibility: 'normal',
+      metadata,
+      createdAt: new Date().toISOString(),
+      _optimistic: true,
+    }
+
+    get().addMessage(optimisticMessage)
+
+    try {
+      // 2. Send to server
+      const realMessage = await api.sendMessage({
+        chatId,
+        content,
+        type,
+        metadata,
+        ...(replyToId ? { replyToId } : {}),
+      })
+
+      // 3. Replace optimistic with real
+      get().replaceOptimisticMessage(chatId, tempId, realMessage)
+    } catch (err) {
+      // 4. Mark as failed
+      get().markMessageFailed(chatId, tempId)
+      throw err
+    }
+  },
+
+  replaceOptimisticMessage: (chatId, tempId, realMessage) => {
+    set((state) => {
+      const chatMessages = state.messages[chatId]
+      if (!chatMessages) return state
+      return {
+        messages: {
+          ...state.messages,
+          [chatId]: chatMessages.map(m =>
+            m.id === tempId ? { ...realMessage, _optimistic: undefined } : m
+          ),
+        },
+      }
+    })
+  },
+
+  markMessageFailed: (chatId, tempId) => {
+    set((state) => {
+      const chatMessages = state.messages[chatId]
+      if (!chatMessages) return state
+      return {
+        messages: {
+          ...state.messages,
+          [chatId]: chatMessages.map(m =>
+            m.id === tempId ? { ...m, status: 'failed', _optimistic: true } : m
+          ),
+        },
+      }
     })
   },
 
@@ -184,7 +291,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ghostLayerEnabled: { ...state.ghostLayerEnabled, [chatId]: newEnabled },
       }
     })
-    // Reload messages with/without ghost
     const enabled = get().ghostLayerEnabled[chatId] || false
     get().loadMessages(chatId, enabled)
   },
@@ -246,5 +352,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!chatMsgs) return state
       return { messages: { ...state.messages, [chatId]: chatMsgs.filter(m => m.id !== messageId) } }
     })
+  },
+
+  // ── Delta Sync ─────────────────────────────────────────────────────────────
+  deltaSync: async () => {
+    const { lastSyncTimestamp } = get()
+    if (!lastSyncTimestamp) return // First load, use full loadChats
+
+    try {
+      const result = await api.syncMessages(lastSyncTimestamp)
+      const { messages: syncData, timestamp } = result
+
+      // Apply new messages
+      if (syncData.new && syncData.new.length > 0) {
+        for (const msg of syncData.new) {
+          get().addMessage(msg)
+        }
+      }
+
+      // Apply edited messages
+      if (syncData.edited && syncData.edited.length > 0) {
+        for (const msg of syncData.edited) {
+          get().updateMessage(msg.chatId, msg.id, {
+            content: msg.content,
+            editedAt: msg.editedAt,
+          })
+        }
+      }
+
+      // Update timestamp
+      set({ lastSyncTimestamp: timestamp })
+      localStorage.setItem('lastSyncTs', String(timestamp))
+    } catch (err) {
+      console.error('[Sync] Delta sync failed, falling back to full load:', err)
+      await get().loadChats()
+    }
+  },
+
+  // Handle bulk sync from WS (on reconnect, server sends pending messages)
+  handleSyncBatch: (messages) => {
+    for (const msg of messages) {
+      get().addMessage(msg)
+    }
+    // Update sync timestamp
+    const now = Math.floor(Date.now() / 1000)
+    set({ lastSyncTimestamp: now })
+    localStorage.setItem('lastSyncTs', String(now))
   },
 }))

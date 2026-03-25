@@ -1,18 +1,28 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { db, schema } from '../db'
-import { eq, and, desc, sql } from 'drizzle-orm'
+import { eq, and, desc, sql, gt } from 'drizzle-orm'
 import { authMiddleware } from '../middleware/auth'
 import { broadcastToChat } from '../ws'
 import { decrypt, decryptMessages } from '../security/encryption'
 import { logDataAccess } from '../security/audit'
+import { chatListCache, recentMessagesCache, invalidateChatListForUser } from '../lib/cache'
 
 const chats = new Hono()
 chats.use('*', authMiddleware)
 
+// ── GET /chats — Optimized single-pass loadChats ─────────────────────────────
+// Replaces the N+1 query pattern (was 3 queries per chat = 151 for 50 chats)
+// Now: 1 query for chats + 1 batch query for members = 2 total.
+
 chats.get('/', async (c) => {
   const userId = c.get('userId')
 
+  // Check cache first
+  const cached = chatListCache.get(userId)
+  if (cached) return c.json(cached)
+
+  // Single query: user's chats with denormalized last_message data
   const userChats = db
     .select({
       chatId: schema.chatMembers.chatId,
@@ -22,49 +32,76 @@ chats.get('/', async (c) => {
       chatAvatar: schema.chats.avatar,
       chatCreatedAt: schema.chats.createdAt,
       memberRole: schema.chatMembers.role,
+      // Denormalized last message (from trigger)
+      lastMessageId: schema.chats.lastMessageId,
+      lastMessageAt: schema.chats.lastMessageAt,
+      lastMessagePreview: schema.chats.lastMessagePreview,
+      lastMessageSenderId: schema.chats.lastMessageSenderId,
     })
     .from(schema.chatMembers)
     .innerJoin(schema.chats, eq(schema.chatMembers.chatId, schema.chats.id))
     .where(eq(schema.chatMembers.userId, userId))
     .all()
 
-  const result = userChats.map((chat) => {
-    const lastMessage = db
-      .select()
-      .from(schema.messages)
-      .where(and(
-        eq(schema.messages.chatId, chat.chatId),
+  if (userChats.length === 0) {
+    chatListCache.set(userId, [])
+    return c.json([])
+  }
+
+  // Batch query: all members across all user's chats (1 query instead of N)
+  const chatIds = userChats.map(c => c.chatId)
+  const allMembers = db
+    .select({
+      chatId: schema.chatMembers.chatId,
+      userId: schema.chatMembers.userId,
+      username: schema.users.username,
+      displayName: schema.users.displayName,
+      avatar: schema.users.avatar,
+      online: schema.users.online,
+      role: schema.chatMembers.role,
+    })
+    .from(schema.chatMembers)
+    .innerJoin(schema.users, eq(schema.chatMembers.userId, schema.users.id))
+    .where(sql`${schema.chatMembers.chatId} IN (${sql.join(chatIds.map(id => sql`${id}`), sql`,`)})`)
+    .all()
+
+  // Group members by chatId
+  const membersByChat = new Map<string, typeof allMembers>()
+  for (const m of allMembers) {
+    let arr = membersByChat.get(m.chatId)
+    if (!arr) {
+      arr = []
+      membersByChat.set(m.chatId, arr)
+    }
+    arr.push(m)
+  }
+
+  // Batch query: unread counts per chat (1 query instead of N)
+  const unreadCounts = db
+    .select({
+      chatId: schema.messages.chatId,
+      count: sql<number>`count(*)`,
+    })
+    .from(schema.messages)
+    .where(
+      and(
+        sql`${schema.messages.chatId} IN (${sql.join(chatIds.map(id => sql`${id}`), sql`,`)})`,
+        eq(schema.messages.status, 'sent'),
+        sql`${schema.messages.senderId} != ${userId}`,
         eq(schema.messages.visibility, 'normal')
-      ))
-      .orderBy(desc(schema.messages.createdAt))
-      .limit(1)
-      .get()
-
-    const members = db
-      .select({
-        userId: schema.chatMembers.userId,
-        username: schema.users.username,
-        displayName: schema.users.displayName,
-        avatar: schema.users.avatar,
-        online: schema.users.online,
-        role: schema.chatMembers.role,
-      })
-      .from(schema.chatMembers)
-      .innerJoin(schema.users, eq(schema.chatMembers.userId, schema.users.id))
-      .where(eq(schema.chatMembers.chatId, chat.chatId))
-      .all()
-
-    const unreadCount = db
-      .select({ count: sql<number>`count(*)` })
-      .from(schema.messages)
-      .where(
-        and(
-          eq(schema.messages.chatId, chat.chatId),
-          eq(schema.messages.status, 'sent'),
-          sql`${schema.messages.senderId} != ${userId}`
-        )
       )
-      .get()
+    )
+    .groupBy(schema.messages.chatId)
+    .all()
+
+  const unreadMap = new Map<string, number>()
+  for (const row of unreadCounts) {
+    unreadMap.set(row.chatId, row.count)
+  }
+
+  // Build result
+  const result = await Promise.all(userChats.map(async (chat) => {
+    const members = membersByChat.get(chat.chatId) || []
 
     let displayName = chat.chatName
     let displayAvatar = chat.chatAvatar
@@ -76,6 +113,23 @@ chats.get('/', async (c) => {
       }
     }
 
+    // Decrypt last message preview
+    let lastMessageContent = chat.lastMessagePreview || null
+    if (lastMessageContent) {
+      try {
+        lastMessageContent = await decrypt(lastMessageContent)
+      } catch {
+        lastMessageContent = null
+      }
+    }
+
+    // Find sender name for last message
+    let lastMessageSenderName: string | null = null
+    if (chat.lastMessageSenderId) {
+      const sender = members.find(m => m.userId === chat.lastMessageSenderId)
+      lastMessageSenderName = sender?.displayName || null
+    }
+
     return {
       id: chat.chatId,
       type: chat.chatType,
@@ -84,35 +138,144 @@ chats.get('/', async (c) => {
       avatar: displayAvatar,
       members,
       myRole: chat.memberRole,
-      lastMessage: lastMessage
+      lastMessage: chat.lastMessageId
         ? {
-            id: lastMessage.id,
-            // content is decrypted below after the sync map; placeholder for now
-            content: lastMessage.content,
-            type: lastMessage.type,
-            senderId: lastMessage.senderId,
-            createdAt: lastMessage.createdAt,
+            id: chat.lastMessageId,
+            content: lastMessageContent,
+            senderId: chat.lastMessageSenderId,
+            senderName: lastMessageSenderName,
+            createdAt: chat.lastMessageAt,
           }
         : null,
-      unreadCount: unreadCount?.count || 0,
+      unreadCount: unreadMap.get(chat.chatId) || 0,
     }
-  })
+  }))
 
+  // Sort by last message time
   result.sort((a, b) => {
     const aTime = a.lastMessage?.createdAt?.getTime?.() || 0
     const bTime = b.lastMessage?.createdAt?.getTime?.() || 0
     return bTime - aTime
   })
 
-  // Decrypt lastMessage content for each chat
-  await Promise.all(result.map(async (chat) => {
-    if (chat.lastMessage) {
-      chat.lastMessage.content = await decrypt(chat.lastMessage.content)
-    }
-  }))
-
+  chatListCache.set(userId, result)
   return c.json(result)
 })
+
+// ── GET /chats/sync — Delta sync endpoint ────────────────────────────────────
+// Returns only changes since a given timestamp.
+// Client calls this on reconnect instead of full loadChats + loadMessages.
+
+chats.get('/sync', async (c) => {
+  const userId = c.get('userId')
+  const sinceParam = c.req.query('since')
+  if (!sinceParam) return c.json({ error: 'since parameter required' }, 400)
+
+  const sinceTs = parseInt(sinceParam)
+  if (isNaN(sinceTs)) return c.json({ error: 'since must be a unix timestamp' }, 400)
+
+  // Get user's chats
+  const userChatIds = db
+    .select({ chatId: schema.chatMembers.chatId })
+    .from(schema.chatMembers)
+    .where(eq(schema.chatMembers.userId, userId))
+    .all()
+    .map(c => c.chatId)
+
+  if (userChatIds.length === 0) {
+    return c.json({ messages: { new: [], edited: [], deleted: [] }, timestamp: Math.floor(Date.now() / 1000) })
+  }
+
+  // New messages since timestamp
+  const newMessages = db.select({
+    id: schema.messages.id,
+    chatId: schema.messages.chatId,
+    senderId: schema.messages.senderId,
+    senderName: schema.users.displayName,
+    senderAvatar: schema.users.avatar,
+    content: schema.messages.content,
+    type: schema.messages.type,
+    replyToId: schema.messages.replyToId,
+    status: schema.messages.status,
+    visibility: schema.messages.visibility,
+    metadata: schema.messages.metadata,
+    editedAt: schema.messages.editedAt,
+    forwardedFrom: schema.messages.forwardedFrom,
+    createdAt: schema.messages.createdAt,
+  })
+    .from(schema.messages)
+    .innerJoin(schema.users, eq(schema.messages.senderId, schema.users.id))
+    .where(
+      and(
+        sql`${schema.messages.chatId} IN (${sql.join(userChatIds.map(id => sql`${id}`), sql`,`)})`,
+        gt(schema.messages.createdAt, new Date(sinceTs * 1000)),
+        eq(schema.messages.visibility, 'normal')
+      )
+    )
+    .orderBy(schema.messages.createdAt)
+    .limit(500)
+    .all()
+
+  // Edited messages since timestamp
+  const editedMessages = db.select({
+    id: schema.messages.id,
+    chatId: schema.messages.chatId,
+    content: schema.messages.content,
+    editedAt: schema.messages.editedAt,
+  })
+    .from(schema.messages)
+    .where(
+      and(
+        sql`${schema.messages.chatId} IN (${sql.join(userChatIds.map(id => sql`${id}`), sql`,`)})`,
+        gt(schema.messages.editedAt, new Date(sinceTs * 1000))
+      )
+    )
+    .limit(200)
+    .all()
+
+  // Decrypt all messages
+  const decryptedNew = await decryptMessages(newMessages as any[])
+  const decryptedEdited = await decryptMessages(editedMessages as any[])
+
+  // Add reactions to new messages
+  if (decryptedNew.length > 0) {
+    const messageIds = decryptedNew.map(m => m.id)
+    const allReactions = db.select().from(schema.messageReactions)
+      .where(sql`${schema.messageReactions.messageId} IN (${sql.join(messageIds.map(id => sql`${id}`), sql`,`)})`)
+      .all()
+
+    const reactionsByMessage = new Map<string, Map<string, { count: number; userIds: string[] }>>()
+    for (const r of allReactions) {
+      if (!reactionsByMessage.has(r.messageId)) reactionsByMessage.set(r.messageId, new Map())
+      const emojiMap = reactionsByMessage.get(r.messageId)!
+      if (!emojiMap.has(r.emoji)) emojiMap.set(r.emoji, { count: 0, userIds: [] })
+      const entry = emojiMap.get(r.emoji)!
+      entry.count++
+      entry.userIds.push(r.userId)
+    }
+
+    for (const msg of decryptedNew) {
+      const msgReactions = reactionsByMessage.get(msg.id)
+      if (msgReactions) {
+        (msg as any).reactions = Array.from(msgReactions.entries()).map(([emoji, data]) => ({
+          emoji, count: data.count, userIds: data.userIds, reacted: data.userIds.includes(userId),
+        }))
+      } else {
+        (msg as any).reactions = []
+      }
+    }
+  }
+
+  return c.json({
+    messages: {
+      new: decryptedNew,
+      edited: decryptedEdited,
+    },
+    timestamp: Math.floor(Date.now() / 1000),
+  })
+})
+
+// ── POST /chats — Create chat ────────────────────────────────────────────────
 
 const createChatSchema = z.object({
   type: z.enum(['private', 'group', 'channel']).default('private'),
@@ -157,7 +320,6 @@ chats.post('/', async (c) => {
     }
   }
 
-  // Groups require a name
   if ((type === 'group' || type === 'channel') && !name) {
     return c.json({ error: 'Name is required for groups and channels' }, 400)
   }
@@ -165,7 +327,6 @@ chats.post('/', async (c) => {
   const chatId = crypto.randomUUID()
   db.insert(schema.chats).values({ id: chatId, type, name, description, avatar }).run()
 
-  // Creator is always admin
   db.insert(schema.chatMembers).values({
     id: crypto.randomUUID(),
     chatId,
@@ -184,15 +345,21 @@ chats.post('/', async (c) => {
     }
   }
 
+  // Invalidate cache for all members
+  invalidateChatListForUser(userId)
+  for (const memberId of memberIds) {
+    invalidateChatListForUser(memberId)
+  }
+
   return c.json({ id: chatId }, 201)
 })
 
-// Add members to group/channel
+// ── POST /:chatId/members — Add members ──────────────────────────────────────
+
 chats.post('/:chatId/members', async (c) => {
   const userId = c.get('userId')
   const chatId = c.req.param('chatId')
 
-  // Verify admin
   const myMember = db.select().from(schema.chatMembers)
     .where(and(
       eq(schema.chatMembers.chatId, chatId),
@@ -210,7 +377,6 @@ chats.post('/:chatId/members', async (c) => {
   if (!Array.isArray(memberIds)) return c.json({ error: 'memberIds required' }, 400)
 
   for (const memberId of memberIds) {
-    // Check not already a member
     const existing = db.select().from(schema.chatMembers)
       .where(and(
         eq(schema.chatMembers.chatId, chatId),
@@ -224,19 +390,20 @@ chats.post('/:chatId/members', async (c) => {
         userId: memberId,
         role: chat.type === 'channel' ? 'viewer' : 'member',
       }).run()
+      invalidateChatListForUser(memberId)
     }
   }
 
   return c.json({ ok: true })
 })
 
-// Remove member from group/channel
+// ── DELETE /:chatId/members/:memberId — Remove member ────────────────────────
+
 chats.delete('/:chatId/members/:memberId', async (c) => {
   const userId = c.get('userId')
   const chatId = c.req.param('chatId')
   const memberId = c.req.param('memberId')
 
-  // Verify admin or self-removal
   const myMember = db.select().from(schema.chatMembers)
     .where(and(
       eq(schema.chatMembers.chatId, chatId),
@@ -254,10 +421,13 @@ chats.delete('/:chatId/members/:memberId', async (c) => {
       eq(schema.chatMembers.userId, memberId)
     )).run()
 
+  invalidateChatListForUser(memberId)
+
   return c.json({ ok: true })
 })
 
-// Update group/channel info
+// ── PUT /:chatId — Update chat info ──────────────────────────────────────────
+
 chats.put('/:chatId', async (c) => {
   const userId = c.get('userId')
   const chatId = c.req.param('chatId')
@@ -285,6 +455,8 @@ chats.put('/:chatId', async (c) => {
   return c.json({ ok: true })
 })
 
+// ── GET /:chatId/messages — Chat history ─────────────────────────────────────
+
 chats.get('/:chatId/messages', async (c) => {
   const userId = c.get('userId')
   const chatId = c.req.param('chatId')
@@ -301,15 +473,18 @@ chats.get('/:chatId/messages', async (c) => {
     return c.json({ error: 'Not a member of this chat' }, 403)
   }
 
-  // Build conditions: always include normal messages
-  // Include ghost messages ONLY if requested AND only user's own ghost messages
-  const conditions = [eq(schema.messages.chatId, chatId)]
+  // Check cache for non-ghost queries
+  if (!includeGhost) {
+    const cached = recentMessagesCache.get(chatId)
+    if (cached) return c.json(cached)
+  }
 
+  const conditions = [eq(schema.messages.chatId, chatId)]
   if (!includeGhost) {
     conditions.push(eq(schema.messages.visibility, 'normal'))
   }
 
-  let query = db
+  let messages = db
     .select({
       id: schema.messages.id,
       chatId: schema.messages.chatId,
@@ -329,24 +504,23 @@ chats.get('/:chatId/messages', async (c) => {
     .where(and(...conditions))
     .orderBy(desc(schema.messages.createdAt))
     .limit(limit)
+    .all()
+    .reverse()
 
-  let messages = query.all().reverse()
-
-  // Filter: ghost messages are ONLY visible to the message sender (owner)
+  // Filter ghost messages
   if (includeGhost) {
     messages = messages.filter(m =>
       m.visibility === 'normal' || m.senderId === userId
     )
   }
 
-  // Add reactions to messages
+  // Batch load reactions
   const messageIds = messages.map(m => m.id)
   if (messageIds.length > 0) {
     const allReactions = db.select().from(schema.messageReactions)
       .where(sql`${schema.messageReactions.messageId} IN (${sql.join(messageIds.map(id => sql`${id}`), sql`,`)})`)
       .all()
 
-    // Group reactions by message
     const reactionsByMessage = new Map<string, Map<string, { count: number; userIds: string[] }>>()
     for (const r of allReactions) {
       if (!reactionsByMessage.has(r.messageId)) reactionsByMessage.set(r.messageId, new Map())
@@ -367,6 +541,7 @@ chats.get('/:chatId/messages', async (c) => {
     }))
   }
 
+  // Mark as read
   db.update(schema.messages)
     .set({ status: 'read' })
     .where(
@@ -379,10 +554,15 @@ chats.get('/:chatId/messages', async (c) => {
     )
     .run()
 
-  // Decrypt message content before returning to client
+  // Decrypt
   const decryptedMessages = await decryptMessages(messages as any[])
 
-  // Audit log — track all user reads of chat history
+  // Cache non-ghost results
+  if (!includeGhost) {
+    recentMessagesCache.set(chatId, decryptedMessages)
+  }
+
+  // Audit log
   const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || undefined
   logDataAccess({
     userId,
@@ -396,7 +576,8 @@ chats.get('/:chatId/messages', async (c) => {
   return c.json(decryptedMessages)
 })
 
-// Search users (must be before /:chatId/search to avoid routing conflict)
+// ── GET /users/search — Search users ─────────────────────────────────────────
+
 chats.get('/users/search', async (c) => {
   const query = c.req.query('q') || ''
   if (query.length < 2) return c.json([])
@@ -417,7 +598,8 @@ chats.get('/users/search', async (c) => {
   return c.json(users)
 })
 
-// Search messages in chat
+// ── GET /:chatId/search — Search messages ────────────────────────────────────
+
 chats.get('/:chatId/search', async (c) => {
   const userId = c.get('userId')
   const chatId = c.req.param('chatId')
@@ -429,8 +611,8 @@ chats.get('/:chatId/search', async (c) => {
     .where(and(eq(schema.chatMembers.chatId, chatId), eq(schema.chatMembers.userId, userId))).get()
   if (!member) return c.json({ error: 'Not a member' }, 403)
 
-  // Fetch all messages in chat then decrypt + filter in-memory.
-  // SQL LIKE cannot search encrypted ciphertext.
+  // Fetch all messages in chat then decrypt + filter in-memory
+  // (encrypted content can't be searched with SQL LIKE)
   const allMessages = db.select({
     id: schema.messages.id,
     chatId: schema.messages.chatId,
@@ -457,7 +639,8 @@ chats.get('/:chatId/search', async (c) => {
   return c.json(results)
 })
 
-// Get pinned messages
+// ── GET /:chatId/pinned — Pinned messages ────────────────────────────────────
+
 chats.get('/:chatId/pinned', async (c) => {
   const userId = c.get('userId')
   const chatId = c.req.param('chatId')
@@ -488,7 +671,8 @@ chats.get('/:chatId/pinned', async (c) => {
   return c.json(decryptedPinned)
 })
 
-// Set disappearing messages timer
+// ── PUT /:chatId/disappear — Disappearing messages ──────────────────────────
+
 chats.put('/:chatId/disappear', async (c) => {
   const userId = c.get('userId')
   const chatId = c.req.param('chatId')

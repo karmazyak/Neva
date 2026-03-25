@@ -130,6 +130,9 @@ sqlite.exec(`
 try { sqlite.exec('ALTER TABLE agents ADD COLUMN modes TEXT DEFAULT \'["command"]\'') } catch {}
 try { sqlite.exec('ALTER TABLE chats ADD COLUMN description TEXT') } catch {}
 
+// Relationship type for AI context awareness
+try { sqlite.exec('ALTER TABLE chat_members ADD COLUMN relationship_type TEXT') } catch {}
+
 // Ghost messages support
 try { sqlite.exec('ALTER TABLE messages ADD COLUMN visibility TEXT NOT NULL DEFAULT \'normal\'') } catch {}
 try { sqlite.exec('ALTER TABLE messages ADD COLUMN metadata TEXT') } catch {}
@@ -372,6 +375,83 @@ try { sqlite.exec('ALTER TABLE agent_configs ADD COLUMN shared INTEGER DEFAULT 0
 // Make ivan's agents public for the marketplace
 try {
   sqlite.exec(`UPDATE agents SET is_public = 1 WHERE owner_id IN (SELECT id FROM users WHERE username = 'ivan')`)
+} catch {}
+
+// ========== PHASE: Performance & Scalability ==========
+
+// Performance PRAGMAs
+sqlite.exec('PRAGMA synchronous = NORMAL')
+sqlite.exec('PRAGMA cache_size = -64000')
+sqlite.exec('PRAGMA mmap_size = 268435456')
+sqlite.exec('PRAGMA busy_timeout = 5000')
+sqlite.exec('PRAGMA wal_autocheckpoint = 1000')
+sqlite.exec('PRAGMA temp_store = MEMORY')
+
+// Critical composite indexes (10-100x speedup on core queries)
+sqlite.exec('CREATE INDEX IF NOT EXISTS idx_messages_chat_created ON messages(chat_id, created_at DESC)')
+sqlite.exec("CREATE INDEX IF NOT EXISTS idx_messages_chat_status ON messages(chat_id, status) WHERE status = 'sent'")
+sqlite.exec('CREATE INDEX IF NOT EXISTS idx_messages_sender_created ON messages(sender_id, created_at DESC)')
+sqlite.exec('CREATE INDEX IF NOT EXISTS idx_chat_members_composite ON chat_members(user_id, chat_id)')
+
+// Denormalized last_message fields in chats (eliminates N+1 in loadChats)
+try { sqlite.exec('ALTER TABLE chats ADD COLUMN last_message_id TEXT') } catch {}
+try { sqlite.exec('ALTER TABLE chats ADD COLUMN last_message_at INTEGER') } catch {}
+try { sqlite.exec('ALTER TABLE chats ADD COLUMN last_message_preview TEXT') } catch {}
+try { sqlite.exec('ALTER TABLE chats ADD COLUMN last_message_sender_id TEXT') } catch {}
+
+// Trigger: keep chats.last_message_* in sync on new message
+sqlite.exec(`
+  CREATE TRIGGER IF NOT EXISTS trg_update_chat_last_message
+  AFTER INSERT ON messages
+  WHEN NEW.visibility = 'normal'
+  BEGIN
+    UPDATE chats SET
+      last_message_id = NEW.id,
+      last_message_at = NEW.created_at,
+      last_message_preview = substr(NEW.content, 1, 200),
+      last_message_sender_id = NEW.sender_id
+    WHERE id = NEW.chat_id;
+  END
+`)
+
+// Backfill: populate last_message for existing chats
+sqlite.exec(`
+  UPDATE chats SET
+    last_message_id = (SELECT id FROM messages WHERE chat_id = chats.id AND visibility = 'normal' ORDER BY created_at DESC LIMIT 1),
+    last_message_at = (SELECT created_at FROM messages WHERE chat_id = chats.id AND visibility = 'normal' ORDER BY created_at DESC LIMIT 1),
+    last_message_preview = (SELECT substr(content, 1, 200) FROM messages WHERE chat_id = chats.id AND visibility = 'normal' ORDER BY created_at DESC LIMIT 1),
+    last_message_sender_id = (SELECT sender_id FROM messages WHERE chat_id = chats.id AND visibility = 'normal' ORDER BY created_at DESC LIMIT 1)
+  WHERE last_message_id IS NULL
+`)
+
+// Mission history table
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS mission_history (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    chat_id TEXT,
+    contact_name TEXT,
+    goal TEXT NOT NULL,
+    strategy TEXT,
+    plan TEXT, -- JSON
+    result TEXT NOT NULL DEFAULT 'failed',
+    conversation_log TEXT,
+    lessons_learned TEXT,
+    replan_count INTEGER DEFAULT 0,
+    messages_sent INTEGER DEFAULT 0,
+    duration_ms INTEGER,
+    created_at INTEGER DEFAULT (unixepoch())
+  )
+`)
+
+// ========== v2 AI features onboarding reset ==========
+// Add onboarding_version to track tutorial version; reset all users to show new AI tutorial
+try { sqlite.exec('ALTER TABLE users ADD COLUMN onboarding_version INTEGER DEFAULT 0') } catch {}
+// Reset onboarding for all users so they see the new v2 AI tutorial
+try {
+  const currentVersion = 2
+  sqlite.exec(`UPDATE users SET onboarding_completed = 0 WHERE onboarding_version < ${currentVersion} OR onboarding_version IS NULL`)
+  sqlite.exec(`UPDATE users SET onboarding_version = ${currentVersion} WHERE onboarding_version < ${currentVersion} OR onboarding_version IS NULL`)
 } catch {}
 
 console.log('Database migrated successfully!')

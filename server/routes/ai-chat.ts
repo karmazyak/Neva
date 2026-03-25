@@ -1,10 +1,10 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { db, schema } from '../db'
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, and } from 'drizzle-orm'
 import { getCachedProfile } from '../ai/style/cache'
 import { authMiddleware } from '../middleware/auth'
-import { chatCompletionWithTools, type ChatMessage } from '../ai/openrouter'
+import { chatCompletionWithTools, chatCompletion, type ChatMessage } from '../ai/openrouter'
 import { ASSISTANT_TOOLS, AUTOPILOT_TOOLS, executeTool, sendConfirmedMessage, type PendingAction, type AutopilotEvent } from '../ai/assistant-tools'
 import {
   checkAiRateLimit,
@@ -16,6 +16,8 @@ import {
   consumePendingAction,
   clearPendingActions,
 } from '../ai/security'
+import { generateMissionPlan, evaluateMissionProgress, replanMission, formatPlanForUser, type MissionPlan, type MissionEvaluation } from '../ai/mission-planner'
+import { decrypt } from '../security/encryption'
 
 const aiChat = new Hono()
 aiChat.use('*', authMiddleware)
@@ -56,6 +58,8 @@ const chatSchema = z.object({
   model: z.string().optional(),
   clearHistory: z.boolean().optional(),
   autopilot: z.boolean().optional(),
+  mission: z.boolean().optional(),       // structured mission mode
+  missionChatId: z.string().optional(),  // target chat for mission
 })
 
 const AUTOPILOT_PROMPT_ADDITION = `
@@ -67,6 +71,9 @@ const AUTOPILOT_PROMPT_ADDITION = `
 - Продолжай вести диалог до выполнения задачи или пока не станет ясно что цель недостижима.
 - В конце верни финальный отчёт пользователю о результате.
 - Пиши естественно, как живой человек. Не раскрывай что ты AI.`
+
+// In-memory mission store (per user)
+const activeMissions = new Map<string, { plan: MissionPlan; step: number; conversationLog: string; replanCount: number }>()
 
 // Direct AI chat with function calling + security
 aiChat.post('/chat', async (c) => {
@@ -94,7 +101,7 @@ aiChat.post('/chat', async (c) => {
     return c.json({ error: 'Invalid input' }, 400)
   }
 
-  const { message, agentId, model, clearHistory, autopilot } = parsed.data
+  const { message, agentId, model, clearHistory, autopilot, mission, missionChatId } = parsed.data
 
   // Autopilot guard: only one session per user
   if (autopilot) {
@@ -131,7 +138,107 @@ aiChat.post('/chat', async (c) => {
   }
   systemPrompt += `\n\nТекущий userId пользователя: "${userId}". Когда пользователь говорит "в моём стиле" или "как я пишу" — используй targetUserId="${userId}" (его собственный ID). Когда он просит "напиши Gabe" без уточнения стиля — тоже пиши в стиле пользователя (targetUserId="${userId}"), а НЕ в стиле получателя.`
 
-  if (autopilot) {
+  // Mission mode: generate structured plan before autopilot
+  let missionPlan: MissionPlan | null = null
+
+  if (mission && autopilot) {
+    try {
+      // Extract goal from mission message (strip "🚀 Миссия:" prefix)
+      const goalMatch = message.match(/(?:🚀\s*)?(?:Миссия|Mission)[:\s]*(.*?)(?:\n|$)/i)
+      const goal = goalMatch?.[1]?.trim() || message
+
+      // Get chat context for the target chat
+      let chatContext = ''
+      let contactName = 'Contact'
+      let relType: string | null = null
+
+      if (missionChatId) {
+        const chatMsgs = db.select({
+          content: schema.messages.content,
+          senderName: schema.users.displayName,
+          senderId: schema.messages.senderId,
+        }).from(schema.messages)
+          .leftJoin(schema.users, eq(schema.messages.senderId, schema.users.id))
+          .where(eq(schema.messages.chatId, missionChatId))
+          .orderBy(desc(schema.messages.createdAt))
+          .limit(20)
+          .all()
+          .reverse()
+
+        const decryptedMsgs = await Promise.all(chatMsgs.map(async m => ({ ...m, content: await decrypt(m.content) })))
+        chatContext = decryptedMsgs
+          .filter(m => m.content && !m.content.startsWith('/uploads/'))
+          .map(m => `${m.senderName}: ${m.content}`)
+          .join('\n')
+
+        contactName = decryptedMsgs.find(m => m.senderId !== userId)?.senderName || 'Contact'
+
+        const member = db.select({ relationshipType: schema.chatMembers.relationshipType })
+          .from(schema.chatMembers)
+          .where(and(eq(schema.chatMembers.chatId, missionChatId), eq(schema.chatMembers.userId, userId)))
+          .get()
+        relType = member?.relationshipType || null
+      }
+
+      // Get user's style hint
+      const styleHint = userStyleCached
+        ? `${userStyleCached.profile.styleInstruction}`
+        : undefined
+
+      // Load past mission lessons for this contact/chat
+      let pastLessons = ''
+      try {
+        const pastMissions = db.select({
+          goal: schema.missionHistory.goal,
+          result: schema.missionHistory.result,
+          lessonsLearned: schema.missionHistory.lessonsLearned,
+        }).from(schema.missionHistory)
+          .where(eq(schema.missionHistory.userId, userId))
+          .orderBy(desc(schema.missionHistory.createdAt))
+          .limit(3)
+          .all()
+
+        if (pastMissions.length > 0) {
+          pastLessons = pastMissions
+            .filter(m => m.lessonsLearned)
+            .map(m => `- [${m.result}] "${m.goal}": ${m.lessonsLearned}`)
+            .join('\n')
+        }
+      } catch {}
+
+      // Append past lessons to chat context for the planner
+      if (pastLessons) {
+        chatContext += `\n\n[Past mission experience with this user]:\n${pastLessons}`
+      }
+
+      // Generate structured plan with strong model
+      missionPlan = await generateMissionPlan(goal, chatContext, contactName, relType, styleHint)
+      activeMissions.set(userId, { plan: missionPlan, step: 0, conversationLog: '', replanCount: 0 })
+
+      // Inject plan into system prompt
+      const planText = formatPlanForUser(missionPlan)
+      systemPrompt += `\n\nРЕЖИМ МИССИИ ВКЛЮЧЁН.
+
+${planText}
+
+ПРАВИЛА МИССИИ:
+- Следуй плану пошагово, но адаптируйся к ситуации.
+- Используй send_message для отправки сообщений (без подтверждения).
+- После каждого ответа собеседника — оценивай прогресс к цели.
+- Если ответ неожиданный — адаптируй подход, не повторяй неудачные шаги.
+- Пиши естественно, как живой человек. Не раскрывай что ты AI.
+- После каждого шага сообщай пользователю текущий статус: [📊 Прогресс: X%]
+- В конце верни финальный отчёт с результатом.
+- Если сработал критерий остановки — немедленно прекрати и сообщи пользователю.`
+
+      // Use stronger model for mission execution
+      aiModel = 'openai/gpt-4o-mini' // execution stays cheap, planning was already on strong model
+    } catch (planError: any) {
+      console.error('Mission planning failed:', planError)
+      // Fallback to legacy autopilot
+      systemPrompt += AUTOPILOT_PROMPT_ADDITION
+    }
+  } else if (autopilot) {
     systemPrompt += AUTOPILOT_PROMPT_ADDITION
   }
 
@@ -149,11 +256,11 @@ aiChat.post('/chat', async (c) => {
   history.push({ role: 'user', content: message })
 
   // Log the chat request
-  logAiAction({ userId, action: 'ai_chat', details: { messageLength: message.length, model: aiModel }, ip: clientIp })
+  logAiAction({ userId, action: 'ai_chat', details: { messageLength: message.length, model: aiModel, mission: !!mission }, ip: clientIp })
 
   // Build messages for LLM
   const recentHistory = history.slice(-30)
-  const messages: ChatMessage[] = [
+  const llmMessages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
     ...recentHistory,
   ]
@@ -163,7 +270,7 @@ aiChat.post('/chat', async (c) => {
     const toolsUsed: string[] = []
     const collectedActions: PendingAction[] = []
     const autopilotEvents: AutopilotEvent[] = []
-    let currentMessages = [...messages]
+    let currentMessages = [...llmMessages]
     const maxIterations = autopilot ? AUTOPILOT_MAX_ITERATIONS : MAX_TOOL_ITERATIONS
     const toolSet = autopilot ? AUTOPILOT_TOOLS : ASSISTANT_TOOLS
 
@@ -270,17 +377,67 @@ aiChat.post('/chat', async (c) => {
 
     if (autopilot) activeAutopilotSessions.delete(userId)
 
+    // Save mission results to DB for learning
+    if (mission && missionPlan) {
+      const missionData = activeMissions.get(userId)
+      const msgsSent = autopilotEvents.filter(e => e.type === 'message_sent').length
+      const isSuccess = finalContent.toLowerCase().includes('успешно') || finalContent.toLowerCase().includes('выполнен')
+        || finalContent.toLowerCase().includes('agreed') || finalContent.toLowerCase().includes('confirmed')
+      const isFailed = finalContent.toLowerCase().includes('не удалось') || finalContent.toLowerCase().includes('отказ')
+        || finalContent.toLowerCase().includes('failed') || finalContent.toLowerCase().includes('невозможно')
+
+      try {
+        // Generate lessons learned from the mission
+        let lessons = ''
+        try {
+          lessons = await chatCompletion({
+            model: 'openai/gpt-4o-mini',
+            messages: [
+              { role: 'system', content: 'Analyze this mission result and extract 1-2 sentences of lessons learned for future missions with this contact. Focus on what worked, what didn\'t, and communication patterns. Be concise. Same language as input.' },
+              { role: 'user', content: `Goal: ${missionPlan.goal}\nStrategy: ${missionPlan.strategy}\nResult: ${finalContent.slice(0, 500)}` },
+            ],
+            temperature: 0.3,
+            maxTokens: 200,
+          })
+        } catch {}
+
+        db.insert(schema.missionHistory).values({
+          userId,
+          chatId: missionChatId || null,
+          contactName: null,
+          goal: missionPlan.goal,
+          strategy: missionPlan.strategy,
+          plan: missionPlan as any,
+          result: isSuccess ? 'success' : isFailed ? 'failed' : 'partial',
+          conversationLog: finalContent.slice(0, 2000),
+          lessonsLearned: lessons || null,
+          replanCount: missionData?.replanCount || 0,
+          messagesSent: msgsSent,
+        }).run()
+      } catch (e) {
+        console.error('Failed to save mission history:', e)
+      }
+      activeMissions.delete(userId)
+    }
+
     return c.json({
       response: finalContent,
       model: aiModel,
       toolsUsed,
       pendingActions: collectedActions.length > 0 ? collectedActions : undefined,
       autopilotEvents: autopilotEvents.length > 0 ? autopilotEvents : undefined,
+      missionPlan: missionPlan ? {
+        goal: missionPlan.goal,
+        strategy: missionPlan.strategy,
+        steps: missionPlan.steps.length,
+        riskLevel: missionPlan.riskLevel,
+      } : undefined,
       historyLength: history.length,
       rateLimitRemaining: rateCheck.remaining,
     })
   } catch (error: any) {
     if (autopilot) activeAutopilotSessions.delete(userId)
+    if (mission) activeMissions.delete(userId)
     logAiAction({ userId, action: 'ai_chat_error', details: { error: error.message }, status: 'error', ip: clientIp })
     return c.json({ error: error.message || 'AI request failed' }, 500)
   }
@@ -340,6 +497,25 @@ aiChat.delete('/chat/history', async (c) => {
   conversations.delete(userId)
   clearPendingActions(userId)
   return c.json({ ok: true })
+})
+
+// Mission history — get past missions for learning
+aiChat.get('/missions', async (c) => {
+  const userId = c.get('userId')
+  const chatId = c.req.query('chatId')
+  const limit = Math.min(parseInt(c.req.query('limit') || '10'), 50)
+
+  let query = db.select().from(schema.missionHistory)
+    .where(eq(schema.missionHistory.userId, userId))
+    .orderBy(desc(schema.missionHistory.createdAt))
+    .limit(limit)
+
+  const missions = query.all()
+
+  // If chatId filter, filter in JS (drizzle sqlite limitation)
+  const filtered = chatId ? missions.filter(m => m.chatId === chatId) : missions
+
+  return c.json({ missions: filtered })
 })
 
 // ── Privacy settings endpoints ──

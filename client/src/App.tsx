@@ -14,6 +14,7 @@ import ToastContainer from './components/ui/Toast'
 import Onboarding from './components/Onboarding'
 import TabBar from './components/TabBar'
 import { registerServiceWorker, subscribeToPush } from './lib/pushNotifications'
+import { useNotifications } from './hooks/useNotifications'
 
 function App() {
   const { user, loading, checkAuth } = useAuthStore()
@@ -21,6 +22,8 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useState(false)
 
   useWebSocket(user ? token : null)
+  // Initialize notification system (tab title badge, visibility tracking)
+  useNotifications()
 
   useEffect(() => {
     checkAuth()

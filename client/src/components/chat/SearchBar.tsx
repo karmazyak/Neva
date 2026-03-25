@@ -47,7 +47,7 @@ export default function SearchBar({ chatId, onClose, onResultClick }: SearchBarP
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search messages..."
+        placeholder="Поиск сообщений..."
         className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-secondary focus:outline-none"
         onKeyDown={(e) => {
           if (e.key === 'Escape') onClose()

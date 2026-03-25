@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useChatStore } from '../../stores/chatStore'
 import { useAuthStore } from '../../stores/authStore'
-import { Menu, Search, Edit, Users, Megaphone } from 'lucide-react'
-import ChatBriefing from './ChatBriefing'
+import { useNotificationStore } from '../../stores/notificationStore'
+import { Menu, Search, Edit, Users, Megaphone, BellOff } from 'lucide-react'
 import FolderTabs from './FolderTabs'
 import { api } from '../../lib/api'
 
@@ -33,6 +33,7 @@ function stripMarkdown(text: string): string {
 
 function formatPreview(content: string | undefined): string {
   if (!content) return 'No messages yet'
+  if (content.startsWith('enc:v1:')) return 'Encrypted message'
   if (content.startsWith('/uploads/') || content.startsWith('http')) {
     if (isImageUrl(content)) return '\ud83d\udcf7 Photo'
     if (isAudioUrl(content)) return '\ud83c\udfa4 Voice message'
@@ -65,9 +66,9 @@ function ChatSkeleton() {
 export default function ChatList({ onMenuClick, onNewChat }: ChatListProps) {
   const { chats, activeChat, setActiveChat, typingUsers, createChat } = useChatStore()
   const { user } = useAuthStore()
+  const { isMuted } = useNotificationStore()
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
-  const [dismissedBriefings, setDismissedBriefings] = useState<Set<string>>(new Set())
   const [activeFolder, setActiveFolder] = useState<string | null>(null)
   const [activeFolderName, setActiveFolderName] = useState<string | null>(null)
   const [globalUsers, setGlobalUsers] = useState<any[]>([])
@@ -250,21 +251,18 @@ export default function ChatList({ onMenuClick, onNewChat }: ChatListProps) {
                         {formatPreview(chat.lastMessage?.content)}
                       </p>
                     )}
-                    {chat.unreadCount > 0 && (
-                      <span className="ml-2 bg-accent text-white text-xs rounded-full px-2 py-0.5 flex-shrink-0">
-                        {chat.unreadCount}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                      {isMuted(chat.id) && (
+                        <BellOff size={14} className="text-text-secondary" />
+                      )}
+                      {chat.unreadCount > 0 && (
+                        <span className={`text-white text-xs rounded-full px-2 py-0.5 ${isMuted(chat.id) ? 'bg-text-secondary/40' : 'bg-accent'}`}>
+                          {chat.unreadCount}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  {/* AI Briefing for chats with many unreads */}
-                  {chat.unreadCount >= 5 && activeChat !== chat.id && !dismissedBriefings.has(chat.id) && (
-                    <ChatBriefing
-                      chatId={chat.id}
-                      unreadCount={chat.unreadCount}
-                      onDismiss={() => setDismissedBriefings(prev => new Set(prev).add(chat.id))}
-                    />
-                  )}
                 </div>
               </button>
             </div>

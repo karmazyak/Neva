@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useChatStore } from '../stores/chatStore'
 import { useAuthStore } from '../stores/authStore'
 import ChatList from '../components/chat/ChatList'
@@ -6,6 +6,7 @@ import ChatWindow from '../components/chat/ChatWindow'
 import Sidebar from '../components/Sidebar'
 import NewChatModal from '../components/chat/NewChatModal'
 import ContextPanel from '../components/chat/ContextPanel'
+import MorningBriefing from '../components/chat/MorningBriefing'
 import NevaLogo from '../components/NevaLogo'
 
 export default function Chats() {
@@ -14,6 +15,7 @@ export default function Chats() {
   const [showNewChat, setShowNewChat] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [contextPanelOpen, setContextPanelOpen] = useState(false)
+  const chatWindowRef = useRef<{ insertText: (text: string) => void } | null>(null)
 
   useEffect(() => {
     loadChats()
@@ -25,7 +27,7 @@ export default function Chats() {
   }, [activeChat])
 
   return (
-    <div className="h-screen flex bg-bg-primary">
+    <div className="h-screen-dynamic flex bg-bg-primary">
       {/* Sidebar menu */}
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
@@ -35,6 +37,7 @@ export default function Chats() {
           activeChat ? 'hidden md:flex' : 'flex'
         } flex-col w-full md:w-[420px] md:min-w-[340px] border-r border-border bg-bg-secondary`}
       >
+        <MorningBriefing />
         <ChatList
           onMenuClick={() => setSidebarOpen(true)}
           onNewChat={() => setShowNewChat(true)}
@@ -49,6 +52,7 @@ export default function Chats() {
       >
         {activeChat ? (
           <ChatWindow
+            ref={chatWindowRef}
             chatId={activeChat}
             onBack={() => setActiveChat(null)}
             contextPanelOpen={contextPanelOpen}
@@ -81,6 +85,7 @@ export default function Chats() {
           <ContextPanel
             chatId={activeChat}
             onClose={() => setContextPanelOpen(false)}
+            onInsertDraft={(text) => chatWindowRef.current?.insertText(text)}
           />
         </div>
       )}

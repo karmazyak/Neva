@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { db, schema } from '../db'
 import { eq, and, sql } from 'drizzle-orm'
 import { authMiddleware } from '../middleware/auth'
-import { broadcastToChat, sendToUser, isUserOnline } from '../ws'
+import { broadcastToChat, sendToUser, isUserOnline, getChatSubscribers, trackPendingDelivery } from '../ws'
 import { processAgentResponse } from '../ai/engine'
 import { processTriggers } from '../ai/triggers'
 import { sanitizeMessage } from '../middleware/security'
@@ -12,6 +12,7 @@ import { encrypt, decrypt, decryptMessages } from '../security/encryption'
 import { logDataAccess } from '../security/audit'
 import { shouldTriggerFirstAnalysis, shouldTriggerReanalysis, saveProfileToCache } from '../ai/style/cache'
 import { analyzeStyle } from '../ai/style/analyzer'
+import { invalidateOnNewMessage } from '../lib/cache'
 
 // Auto-analyze user's writing style (runs in background)
 const styleAnalysisInProgress = new Set<string>()
@@ -138,12 +139,19 @@ messages.post('/', async (c) => {
 
   db.insert(schema.messages).values(message).run()
 
+  // Invalidate caches for all chat members
+  const chatMemberIds = db.select({ userId: schema.chatMembers.userId })
+    .from(schema.chatMembers)
+    .where(eq(schema.chatMembers.chatId, chatId))
+    .all()
+    .map(m => m.userId)
+  invalidateOnNewMessage(chatId, chatMemberIds)
+
   const sender = db.select({
     displayName: schema.users.displayName,
     avatar: schema.users.avatar,
   }).from(schema.users).where(eq(schema.users.id, userId)).get()
 
-  // fullMessage for WebSocket broadcast uses plaintext content (in-memory only, never persisted)
   const fullMessage = {
     ...message,
     content: plaintextContent,
@@ -157,7 +165,12 @@ messages.post('/', async (c) => {
     message: fullMessage,
   })
 
-  // Send push notifications to offline users (plaintext for notification body)
+  // Track pending delivery for offline users
+  const onlineSubscribers = getChatSubscribers(chatId)
+  const offlineMembers = chatMemberIds.filter(id => id !== userId && !onlineSubscribers.includes(id))
+  trackPendingDelivery(messageId, offlineMembers)
+
+  // Send push notifications to offline users
   sendPushToOfflineUsers(chatId, userId, sender?.displayName || 'Someone', plaintextContent, isUserOnline).catch(() => {})
 
   // Send mention notifications

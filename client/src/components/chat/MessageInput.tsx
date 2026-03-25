@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react'
-import { Send, Paperclip, Image, FileText, Video, X, Loader2, Bot, Store, Mic, Square, Sparkles, Clock } from 'lucide-react'
+import { Send, Paperclip, Image, FileText, Video, X, Loader2, Bot, Store, Mic, Square, Sparkles, Clock, CornerUpLeft } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api'
 import { useAgentStore } from '../../stores/agentStore'
 import { useChatStore } from '../../stores/chatStore'
 import TextTransformBar from './TextTransformBar'
+import ToneAdvisor from './ToneAdvisor'
 import SchedulePicker from './SchedulePicker'
 import CreditConfirmDialog from './CreditConfirmDialog'
 
@@ -14,6 +15,13 @@ interface MediaFile {
   type: 'image' | 'video' | 'file'
 }
 
+interface ReplyingTo {
+  id: string
+  senderName: string
+  content: string
+  type: string
+}
+
 interface MessageInputProps {
   onSend: (content: string, type?: string, metadata?: Record<string, any>) => void
   onTyping: () => void
@@ -21,6 +29,8 @@ interface MessageInputProps {
   chatId?: string
   isChannel?: boolean
   canPost?: boolean
+  replyingTo?: ReplyingTo | null
+  onCancelReply?: () => void
 }
 
 const MAX_MEDIA_FILES = 10
@@ -37,8 +47,8 @@ function getFileMediaType(file: File): 'image' | 'video' | 'file' {
   return 'file'
 }
 
-const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMode: (msgId: string, content: string) => void }, MessageInputProps>(
-  function MessageInput({ onSend, onTyping, onEditMessage, chatId, isChannel, canPost = true }, ref) {
+const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMode: (msgId: string, content: string) => void; setReplyMode: (msg: ReplyingTo) => void; clearReply: () => void }, MessageInputProps>(
+  function MessageInput({ onSend, onTyping, onEditMessage, chatId, isChannel, canPost = true, replyingTo, onCancelReply }, ref) {
   const [text, setText] = useState('')
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [showAttachMenu, setShowAttachMenu] = useState(false)
@@ -86,6 +96,10 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
       setText(content)
       setTimeout(() => inputRef.current?.focus(), 50)
     },
+    setReplyMode: (_msg: ReplyingTo) => {
+      setTimeout(() => inputRef.current?.focus(), 50)
+    },
+    clearReply: () => {},
   }))
 
   // Load user's available skills on mount
@@ -293,6 +307,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
     onSend(text.trim())
     setText('')
     setShowSkillMenu(false)
+    onCancelReply?.()
     if (inputRef.current) {
       inputRef.current.style.height = 'auto'
     }
@@ -358,7 +373,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
       recordingTimerRef.current = setInterval(() => setRecordingTime(t => t + 1), 1000)
     } catch (err) {
       console.error('Microphone access denied:', err)
-      alert('Microphone access is required for voice messages')
+      alert('Для голосовых сообщений нужен доступ к микрофону')
     }
   }
 
@@ -447,15 +462,15 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
 
   const attachOptions = [
     {
-      icon: Image, label: 'Photo', color: 'text-accent bg-accent/10',
+      icon: Image, label: 'Фото', color: 'text-accent bg-accent/10',
       onClick: () => { setUploadType('image'); setTimeout(() => fileInputRef.current?.click(), 10) },
     },
     {
-      icon: Video, label: 'Video', color: 'text-accent bg-accent/10',
+      icon: Video, label: 'Видео', color: 'text-accent bg-accent/10',
       onClick: () => { setUploadType('video'); setTimeout(() => fileInputRef.current?.click(), 10) },
     },
     {
-      icon: FileText, label: 'Document', color: 'text-accent bg-accent/10',
+      icon: FileText, label: 'Документ', color: 'text-accent bg-accent/10',
       onClick: () => { setUploadType('file'); setTimeout(() => fileInputRef.current?.click(), 10) },
     },
   ]
@@ -470,7 +485,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
   if (isChannel && !canPost) {
     return (
       <div className="px-4 py-3 bg-bg-secondary border-t border-border text-center">
-        <span className="text-text-secondary text-sm">Only admins can post in this channel</span>
+        <span className="text-text-secondary text-sm">Только администраторы могут писать в этом канале</span>
       </div>
     )
   }
@@ -480,6 +495,18 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
 
   return (
     <div className="relative">
+      {/* Tone Advisor — ambient AI hint */}
+      {chatId && text.trim().length > 20 && !text.startsWith('/') && !executing && !recording && !showTransformBar && (
+        <ToneAdvisor
+          chatId={chatId}
+          text={text}
+          onApplySuggestion={(newText) => {
+            setText(newText)
+            inputRef.current?.focus()
+          }}
+        />
+      )}
+
       {/* Text Transform Bar — AI rewrite before sending */}
       {showTransformBar && text.trim().length > 0 && !showSkillMenu && !executing && !recording && (
         <TextTransformBar
@@ -496,7 +523,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
           <div className="fixed inset-0 z-30" onClick={() => setShowSkillMenu(false)} />
           <div className="absolute bottom-full left-0 right-0 mx-4 mb-2 bg-bg-secondary border border-border rounded-xl shadow-xl z-40 overflow-hidden fade-in">
             <div className="px-4 py-2 border-b border-border/50">
-              <span className="text-xs text-text-secondary">Agent Skills — hidden from chat partner</span>
+              <span className="text-xs text-text-secondary">Навыки агентов — скрыты от собеседника</span>
             </div>
             {filteredSkills.length > 0 ? (
               filteredSkills.map((skill) => (
@@ -529,8 +556,8 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
               <div className="px-4 py-4 text-center">
                 <p className="text-text-secondary text-sm mb-2">
                   {mySkills.length === 0
-                    ? 'No agents installed yet'
-                    : 'No matching commands'}
+                    ? 'Нет установленных агентов'
+                    : 'Команда не найдена'}
                 </p>
                 {mySkills.length === 0 && (
                   <button
@@ -538,7 +565,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
                     className="inline-flex items-center gap-1.5 text-accent text-sm hover:underline"
                   >
                     <Store size={14} />
-                    Install robots from Robot Store
+                    Установить роботов из Магазина
                   </button>
                 )}
               </div>
@@ -553,7 +580,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
           <div className="fixed inset-0 z-30" onClick={() => setShowAttachMenu(false)} />
           <div className="absolute bottom-full left-4 mb-2 bg-bg-secondary border border-border rounded-xl shadow-xl z-40 overflow-hidden fade-in w-52">
             <div className="flex items-center justify-between px-4 py-2 border-b border-border/50">
-              <span className="text-sm font-medium text-text-primary">Attach</span>
+              <span className="text-sm font-medium text-text-primary">Прикрепить</span>
               <button onClick={() => setShowAttachMenu(false)} className="text-text-secondary hover:text-text-primary">
                 <X size={16} />
               </button>
@@ -588,7 +615,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
           <div className="fixed inset-0 z-30" onClick={() => setShowMentionMenu(false)} />
           <div className="absolute bottom-full left-0 right-0 mx-4 mb-2 bg-bg-secondary border border-border rounded-xl shadow-xl z-40 overflow-hidden fade-in">
             <div className="px-4 py-1.5 border-b border-border/50">
-              <span className="text-xs text-text-secondary">Mention a member</span>
+              <span className="text-xs text-text-secondary">Упомянуть участника</span>
             </div>
             {filteredMembers.map((member) => (
               <button
@@ -661,7 +688,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
         <div className="absolute bottom-full left-0 right-0 mx-4 mb-2 bg-accent/10 border border-accent/20 rounded-xl px-4 py-2.5 flex items-center gap-2 fade-in">
           <Loader2 size={16} className="text-accent animate-spin" />
           <span className="text-sm text-accent">
-            {pendingMedia.length > 0 ? `Uploading ${pendingMedia.length} file(s)...` : 'Executing skill...'}
+            {pendingMedia.length > 0 ? `Загрузка ${pendingMedia.length} файл(ов)...` : 'Выполнение навыка...'}
           </span>
         </div>
       )}
@@ -670,9 +697,33 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
       {recording && (
         <div className="absolute bottom-full left-0 right-0 mx-4 mb-2 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5 flex items-center gap-2 fade-in">
           <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-          <span className="text-sm text-red-400 font-medium">Recording {formatTime(recordingTime)}</span>
+          <span className="text-sm text-red-400 font-medium">Запись {formatTime(recordingTime)}</span>
           <button onClick={stopRecording} className="ml-auto p-1.5 bg-red-500/20 rounded-full hover:bg-red-500/30 transition-colors">
             <Square size={14} className="text-red-400" />
+          </button>
+        </div>
+      )}
+
+      {/* Reply preview banner */}
+      {replyingTo && !editingMessageId && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-accent/5 border-t border-accent/30">
+          <CornerUpLeft size={14} className="text-accent flex-shrink-0" />
+          <div className="flex-1 min-w-0 border-l-2 border-accent pl-2">
+            <div className="text-xs font-semibold text-accent truncate">{replyingTo.senderName}</div>
+            <div className="text-xs text-text-secondary truncate">
+              {replyingTo.type === 'image' ? '📷 Фото'
+                : replyingTo.type === 'video' ? '🎬 Видео'
+                : replyingTo.type === 'voice' ? '🎤 Голосовое сообщение'
+                : replyingTo.type === 'file' ? '📎 Файл'
+                : replyingTo.type === 'media_group' ? '🖼 Медиа'
+                : replyingTo.content}
+            </div>
+          </div>
+          <button
+            onClick={onCancelReply}
+            className="text-text-secondary hover:text-text-primary flex-shrink-0"
+          >
+            <X size={16} />
           </button>
         </div>
       )}
@@ -681,7 +732,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
       {editingMessageId && (
         <div className="flex items-center gap-2 px-4 py-2 bg-accent/10 border-t border-accent/30">
           <Sparkles size={14} className="text-accent" />
-          <span className="text-xs text-accent font-medium flex-1">Editing message</span>
+          <span className="text-xs text-accent font-medium flex-1">Редактирование</span>
           <button
             onClick={() => { setEditingMessageId(null); setText('') }}
             className="text-text-secondary hover:text-text-primary"
@@ -748,10 +799,10 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             placeholder={
-              executing ? 'Executing...'
-                : pendingMedia.length > 0 ? 'Add a caption...'
-                : mySkills.length > 0 ? 'Message (type / for skills)'
-                : 'Message'
+              executing ? 'Выполнение...'
+                : pendingMedia.length > 0 ? 'Добавить подпись...'
+                : mySkills.length > 0 ? 'Сообщение (/ для навыков)'
+                : 'Сообщение'
             }
             rows={1}
             disabled={executing || recording}
@@ -766,7 +817,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
                   ? 'text-accent bg-accent/15'
                   : 'text-text-secondary hover:text-accent hover:bg-accent/10'
               }`}
-              title="AI Rewrite"
+              title="AI переписать"
             >
               <Sparkles size={16} />
             </button>
@@ -780,7 +831,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
               <button
                 onClick={() => setShowSchedulePicker(!showSchedulePicker)}
                 className={`p-2 rounded-full transition-colors ${showSchedulePicker ? 'text-accent bg-accent/10' : 'text-text-secondary hover:text-text-primary'}`}
-                title="Schedule message"
+                title="Отложить сообщение"
               >
                 <Clock size={18} />
               </button>

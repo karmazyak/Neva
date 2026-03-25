@@ -24,10 +24,10 @@ export default function PinnedBar({ chatId, onClickPinned }: PinnedBarProps) {
       onClick={() => onClickPinned?.(latest.messageId)}>
       <Pin size={14} className="text-accent flex-shrink-0" />
       <div className="flex-1 min-w-0">
-        <span className="text-xs text-accent font-medium">Pinned Message</span>
+        <span className="text-xs text-accent font-medium">Закреплённое сообщение</span>
         <p className="text-sm text-text-primary truncate">{latest.content}</p>
       </div>
-      {pinned.length > 1 && <span className="text-[10px] text-text-secondary">{pinned.length} pinned</span>}
+      {pinned.length > 1 && <span className="text-[10px] text-text-secondary">{pinned.length} закреп.</span>}
       <button onClick={(e) => { e.stopPropagation(); setDismissed(true) }} className="text-text-secondary hover:text-text-primary">
         <X size={14} />
       </button>

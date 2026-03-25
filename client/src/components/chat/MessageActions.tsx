@@ -8,9 +8,10 @@ interface MessageActionsProps {
   onClose: () => void
   onInsertReply: (text: string) => void
   chatContext?: string
+  chatId?: string
 }
 
-export default function MessageActions({ messageText, position, onClose, onInsertReply, chatContext }: MessageActionsProps) {
+export default function MessageActions({ messageText, position, onClose, onInsertReply, chatContext, chatId }: MessageActionsProps) {
   const [loading, setLoading] = useState<string | null>(null)
   const [result, setResult] = useState<{ type: string; content: string | string[] } | null>(null)
 
@@ -24,6 +25,7 @@ export default function MessageActions({ messageText, position, onClose, onInser
         text: messageText,
         action,
         chatContext,
+        chatId,
       })
 
       setResult({ type: action, content: res.result })
