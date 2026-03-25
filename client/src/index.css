@@ -232,10 +232,12 @@ body {
   display: none;
 }
 
-/* Dynamic viewport height — respects mobile keyboard */
+/* Dynamic viewport height — respects mobile keyboard & browser chrome */
 .h-screen-dynamic {
   height: 100vh;
   height: 100dvh;
+  /* Fallback for browsers that don't support dvh: use JS-set var */
+  height: var(--app-height, 100dvh);
 }
 
 /* Safe area for tab bar on mobile */

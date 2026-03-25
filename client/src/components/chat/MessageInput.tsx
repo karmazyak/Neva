@@ -782,7 +782,7 @@ const MessageInput = forwardRef<{ insertText: (text: string) => void; setEditMod
         </div>
       )}
 
-      <div className="flex items-end gap-2 px-4 py-3 bg-bg-secondary border-t border-border">
+      <div className="flex items-end gap-2 px-4 py-3 bg-bg-secondary border-t border-border safe-area-bottom">
         <button
           onClick={() => setShowAttachMenu(!showAttachMenu)}
           className={`p-2 transition-colors flex-shrink-0 self-end rounded-full ${

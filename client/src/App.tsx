@@ -13,6 +13,7 @@ import SavedMessages from './pages/SavedMessages'
 import ToastContainer from './components/ui/Toast'
 import Onboarding from './components/Onboarding'
 import TabBar from './components/TabBar'
+import { TourProvider, TourProgress } from './components/GuidedTour'
 import { registerServiceWorker, subscribeToPush } from './lib/pushNotifications'
 import { useNotifications } from './hooks/useNotifications'
 
@@ -34,6 +35,20 @@ function App() {
     const savedTheme = localStorage.getItem('theme')
     if (savedTheme) {
       document.documentElement.setAttribute('data-theme', savedTheme)
+    }
+  }, [])
+
+  // Fix viewport height on mobile (Android browser chrome issue)
+  useEffect(() => {
+    const setAppHeight = () => {
+      document.documentElement.style.setProperty('--app-height', `${window.innerHeight}px`)
+    }
+    setAppHeight()
+    window.addEventListener('resize', setAppHeight)
+    window.addEventListener('orientationchange', setAppHeight)
+    return () => {
+      window.removeEventListener('resize', setAppHeight)
+      window.removeEventListener('orientationchange', setAppHeight)
     }
   }, [])
 
@@ -86,8 +101,9 @@ function App() {
   }
 
   return (
-    <>
+    <TourProvider>
       <ToastContainer />
+      <TourProgress />
       {showOnboarding && <Onboarding onComplete={() => setShowOnboarding(false)} />}
       <Routes>
         <Route path="/" element={<Chats />} />
@@ -103,7 +119,7 @@ function App() {
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
       <TabBar />
-    </>
+    </TourProvider>
   )
 }
 
