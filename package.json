@@ -1,0 +1,30 @@
+{
+  "name": "mlsendger",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun run dev:server & bun run dev:client",
+    "dev:server": "bun run --hot server/index.ts",
+    "dev:client": "cd client && bunx --bun vite --host",
+    "db:generate": "bunx drizzle-kit generate",
+    "db:migrate": "bun run server/db/migrate.ts",
+    "build": "cd client && bunx --bun vite build"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^11.8.0",
+    "drizzle-orm": "^0.39.0",
+    "hono": "^4.7.0",
+    "jsonwebtoken": "^9.0.2",
+    "web-push": "^3.6.7",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/web-push": "^3.6.4",
+    "drizzle-kit": "^0.30.0",
+    "typescript": "^5.7.0"
+  }
+}

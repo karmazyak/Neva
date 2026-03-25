@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mlsendger-server",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "--hot", "server/index.ts"],
+      "port": 3000
+    },
+    {
+      "name": "mlsendger-client",
+      "runtimeExecutable": "bunx",
+      "runtimeArgs": ["--bun", "vite", "--host"],
+      "port": 5173,
+      "autoPort": false,
+      "cwd": "/Users/ivangorbunov/Documents/busy/mlsendger/client"
+    }
+  ]
+}
