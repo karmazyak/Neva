@@ -3,7 +3,7 @@ import { eq, sql } from 'drizzle-orm'
 
 // ── Rate Limiting ──
 
-const AI_RATE_LIMIT = 30 // requests per window
+const AI_RATE_LIMIT = 9999 // effectively disabled for demo
 const AI_RATE_WINDOW = 60 * 60 * 1000 // 1 hour
 
 const rateLimits = new Map<string, { count: number; resetAt: number }>()

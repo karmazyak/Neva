@@ -69,7 +69,7 @@ app.use('/api/auth/register', rateLimiter({ windowMs: 300_000, max: 5, keyPrefix
 app.use('/api/messages', rateLimiter({ windowMs: 60_000, max: 60, keyPrefix: 'messages' }))
 
 // Rate limit on AI chat
-app.use('/api/ai/chat', rateLimiter({ windowMs: 60_000, max: 20, keyPrefix: 'ai-chat' }))
+app.use('/api/ai/chat', rateLimiter({ windowMs: 60_000, max: 9999, keyPrefix: 'ai-chat' })) // relaxed for demo
 
 // ========== API ROUTES ==========
 app.route('/api/auth', authRoutes)
