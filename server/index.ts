@@ -21,6 +21,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { getAvailableModels } from './ai/openrouter'
 import { securityHeaders, rateLimiter } from './middleware/security'
+import { authMiddleware } from './middleware/auth'
 import {
   handleWSUpgrade,
   handleWSOpen,
@@ -86,8 +87,8 @@ app.route('/api/push', pushRoutes)
 app.route('/api/saved', savedRoutes)
 app.route('/api/folders', folderRoutes)
 
-// Get available AI models (cached, lighter rate limit)
-app.get('/api/models', async (c) => {
+// Get available AI models (requires auth)
+app.get('/api/models', authMiddleware, async (c) => {
   const models = await getAvailableModels()
   return c.json(models)
 })

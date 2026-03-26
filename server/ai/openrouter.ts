@@ -1,6 +1,13 @@
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || ''
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
 
+// Validate API key on module load
+if (!OPENROUTER_API_KEY) {
+  console.warn('[OPENROUTER] WARNING: OPENROUTER_API_KEY is not set. AI features will not work.')
+} else if (OPENROUTER_API_KEY.length < 10) {
+  console.warn('[OPENROUTER] WARNING: OPENROUTER_API_KEY looks invalid (too short).')
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string

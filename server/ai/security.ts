@@ -120,6 +120,44 @@ export function sanitizeForAi(text: string, maskingEnabled: boolean): string {
   return sanitized
 }
 
+// ── Content Safety Filter ──
+// Blocks toxic, harmful, or abusive content from being sent via AI autopilot/missions.
+// This is a lightweight keyword-based filter — not a replacement for model-level safety,
+// but a critical last line of defense before messages reach real people.
+
+const BLOCKED_PATTERNS = [
+  // Threats & violence
+  /\b(?:убью|убить|зарежу|взорву|застрелю|прибью|урою|закопаю|сдохни|подохни)\b/gi,
+  /\b(?:kill\s+you|i'?ll\s+kill|gonna\s+die|murder|shoot\s+you)\b/gi,
+  // Extreme harassment
+  /\b(?:тварь|мразь|сука\s+(?:ты|бл)|пошёл?\s+на\s+х|иди\s+на\s+х|пош[её]л\s+нах|нахуй)\b/gi,
+  // Slurs & hate speech (RU)
+  /\b(?:чурк[аи]|хач[аи]|жидов|негр[аы]|пидор|пидар)\b/gi,
+  // Self-harm encouragement
+  /\b(?:покончи\s+с\s+собой|суицид|повесься|вскрой\s+вены)\b/gi,
+  // Fraud / impersonation
+  /\b(?:я\s+(?:из|от)\s+(?:банка|полиции|фсб|налоговой)|переведи\s+(?:деньги|средства)\s+на\s+(?:карту|счёт))\b/gi,
+]
+
+export interface ContentFilterResult {
+  safe: boolean
+  reason?: string
+}
+
+export function filterContent(text: string): ContentFilterResult {
+  for (const pattern of BLOCKED_PATTERNS) {
+    // Reset regex lastIndex for global patterns
+    pattern.lastIndex = 0
+    if (pattern.test(text)) {
+      return {
+        safe: false,
+        reason: `Message blocked by content filter (matched safety rule)`,
+      }
+    }
+  }
+  return { safe: true }
+}
+
 // ── Pending Actions TTL ──
 
 const ACTION_TTL = 5 * 60 * 1000 // 5 minutes

@@ -2,7 +2,7 @@ import { db, schema } from '../db'
 import { eq, and, like, desc, sql } from 'drizzle-orm'
 import { broadcastToChat } from '../ws'
 import type { ToolDefinition } from './openrouter'
-import { sanitizeForAi } from './security'
+import { sanitizeForAi, filterContent, logAiAction } from './security'
 import { analyzeStyle } from './style/analyzer'
 import { generateStyledReply } from './style/generator'
 import { getCachedProfile, saveProfileToCache } from './style/cache'
@@ -551,6 +551,20 @@ export async function sendConfirmedMessage(userId: string, chatId: string, conte
     .get()
 
   if (!membership) return false
+
+  // Content safety filter — block toxic/harmful messages from AI autopilot
+  const filterResult = filterContent(content)
+  if (!filterResult.safe) {
+    logAiAction({
+      userId,
+      action: 'message_blocked',
+      details: { chatId, reason: filterResult.reason, contentPreview: content.slice(0, 100) },
+      chatIdAccessed: chatId,
+      status: 'denied',
+    })
+    console.warn(`[CONTENT FILTER] Blocked message from user ${userId} to chat ${chatId}: ${filterResult.reason}`)
+    return false
+  }
 
   const messageId = crypto.randomUUID()
   const sender = db.select({ displayName: schema.users.displayName, avatar: schema.users.avatar })
