@@ -6,19 +6,71 @@ import { authMiddleware } from '../middleware/auth'
 const app = new Hono()
 app.use('*', authMiddleware)
 
-// GET /api/goals — list user's goals (active by default, or ?status=all|completed|...)
+// ═══ Proactive Actions (MUST be before /:id to avoid route conflict) ═══
+
+// GET /api/goals/proactive/pending — get pending proactive actions
+app.get('/proactive/pending', async (c) => {
+  const userId = (c as any).userId as string
+
+  const actions = db.select().from(schema.proactiveActions)
+    .where(and(
+      eq(schema.proactiveActions.userId, userId),
+      eq(schema.proactiveActions.status, 'pending'),
+    ))
+    .orderBy(desc(schema.proactiveActions.createdAt))
+    .limit(10)
+    .all()
+
+  return c.json({ actions })
+})
+
+// PATCH /api/goals/proactive/:id — act on or dismiss a proactive action
+app.patch('/proactive/:id', async (c) => {
+  const userId = (c as any).userId as string
+  const actionId = c.req.param('id')
+  const { status } = await c.req.json<{ status: 'acted' | 'dismissed' }>()
+
+  db.update(schema.proactiveActions)
+    .set({ status })
+    .where(and(
+      eq(schema.proactiveActions.id, actionId),
+      eq(schema.proactiveActions.userId, userId),
+    ))
+    .run()
+
+  return c.json({ ok: true })
+})
+
+// GET /api/goals/chat/:chatId — get active goals for a specific chat
+app.get('/chat/:chatId', async (c) => {
+  const userId = (c as any).userId as string
+  const chatId = c.req.param('chatId')
+
+  const goals = db.select().from(schema.userGoals)
+    .where(and(
+      eq(schema.userGoals.userId, userId),
+      eq(schema.userGoals.chatId, chatId),
+      inArray(schema.userGoals.status, ['active', 'in_progress']),
+    ))
+    .orderBy(desc(schema.userGoals.updatedAt))
+    .all()
+
+  return c.json({ goals })
+})
+
+// ═══ Goals CRUD ═══
+
+// GET /api/goals — list user's goals
 app.get('/', async (c) => {
   const userId = (c as any).userId as string
   const statusFilter = c.req.query('status') || 'active'
   const chatId = c.req.query('chatId')
 
-  let query = db.select().from(schema.userGoals)
+  const goals = db.select().from(schema.userGoals)
     .where(eq(schema.userGoals.userId, userId))
     .orderBy(desc(schema.userGoals.updatedAt))
+    .all()
 
-  const goals = query.all()
-
-  // Filter in JS because Drizzle SQLite doesn't support OR chains cleanly
   const filtered = goals.filter(g => {
     if (chatId && g.chatId !== chatId) return false
     if (statusFilter === 'all') return true
@@ -78,7 +130,7 @@ app.post('/', async (c) => {
   return c.json({ goal }, 201)
 })
 
-// PATCH /api/goals/:id — update a goal (progress, status, strategy, etc.)
+// PATCH /api/goals/:id — update a goal
 app.patch('/:id', async (c) => {
   const userId = (c as any).userId as string
   const goalId = c.req.param('id')
@@ -97,7 +149,6 @@ app.patch('/:id', async (c) => {
 
   if (!existing) return c.json({ error: 'Goal not found' }, 404)
 
-  // Build update object
   const updates: Record<string, any> = { updatedAt: sql`(unixepoch())` }
 
   if (body.status) {
@@ -111,7 +162,6 @@ app.patch('/:id', async (c) => {
   if (body.autonomyLevel) updates.autonomyLevel = body.autonomyLevel
   if (body.lessonsLearned) updates.lessonsLearned = body.lessonsLearned
 
-  // Add progress note
   if (body.addProgressNote) {
     const notes = (existing.progressNotes || []) as Array<{ date: string; note: string }>
     notes.push({ date: new Date().toISOString(), note: body.addProgressNote })
@@ -136,58 +186,6 @@ app.delete('/:id', async (c) => {
 
   db.delete(schema.userGoals)
     .where(and(eq(schema.userGoals.id, goalId), eq(schema.userGoals.userId, userId)))
-    .run()
-
-  return c.json({ ok: true })
-})
-
-// GET /api/goals/chat/:chatId — get active goals for a specific chat
-app.get('/chat/:chatId', async (c) => {
-  const userId = (c as any).userId as string
-  const chatId = c.req.param('chatId')
-
-  const goals = db.select().from(schema.userGoals)
-    .where(and(
-      eq(schema.userGoals.userId, userId),
-      eq(schema.userGoals.chatId, chatId),
-      inArray(schema.userGoals.status, ['active', 'in_progress']),
-    ))
-    .orderBy(desc(schema.userGoals.updatedAt))
-    .all()
-
-  return c.json({ goals })
-})
-
-// ═══ Proactive Actions ═══
-
-// GET /api/goals/proactive/pending — get pending proactive actions
-app.get('/proactive/pending', async (c) => {
-  const userId = (c as any).userId as string
-
-  const actions = db.select().from(schema.proactiveActions)
-    .where(and(
-      eq(schema.proactiveActions.userId, userId),
-      eq(schema.proactiveActions.status, 'pending'),
-    ))
-    .orderBy(desc(schema.proactiveActions.createdAt))
-    .limit(10)
-    .all()
-
-  return c.json({ actions })
-})
-
-// PATCH /api/goals/proactive/:id — act on or dismiss a proactive action
-app.patch('/proactive/:id', async (c) => {
-  const userId = (c as any).userId as string
-  const actionId = c.req.param('id')
-  const { status } = await c.req.json<{ status: 'acted' | 'dismissed' }>()
-
-  db.update(schema.proactiveActions)
-    .set({ status })
-    .where(and(
-      eq(schema.proactiveActions.id, actionId),
-      eq(schema.proactiveActions.userId, userId),
-    ))
     .run()
 
   return c.json({ ok: true })
