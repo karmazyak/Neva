@@ -44,33 +44,21 @@ export default function ProactiveCard() {
 
   const loadActions = async () => {
     try {
-      const data = await api.request<{ actions: ProactiveAction[] }>('/goals/proactive/pending')
+      const data = await api.getProactiveActions()
       setActions(data.actions || [])
     } catch {}
   }
 
   const handleAct = async (action: ProactiveAction) => {
-    // Open the chat
     if (action.chatId) {
       setActiveChat(action.chatId)
     }
-    // Mark as acted
-    try {
-      await api.request(`/goals/proactive/${action.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'acted' }),
-      })
-    } catch {}
+    try { await api.actOnProactiveAction(action.id, 'acted') } catch {}
     setActions(prev => prev.filter(a => a.id !== action.id))
   }
 
   const handleDismiss = async (action: ProactiveAction) => {
-    try {
-      await api.request(`/goals/proactive/${action.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'dismissed' }),
-      })
-    } catch {}
+    try { await api.actOnProactiveAction(action.id, 'dismissed') } catch {}
     setActions(prev => prev.filter(a => a.id !== action.id))
   }
 

@@ -628,6 +628,38 @@ class ApiClient {
     return this.request<{ ok: boolean }>('/ai/tools/set-goal', { method: 'POST', body: JSON.stringify({ chatId, goal, strategy }) })
   }
 
+  // ── Persistent Goals API ──
+
+  async getGoals(status: string = 'active') {
+    return this.request<{ goals: any[] }>(`/goals?status=${status}`)
+  }
+
+  async getGoalsForChat(chatId: string) {
+    return this.request<{ goals: any[] }>(`/goals/chat/${chatId}`)
+  }
+
+  async createGoal(data: { goal: string; chatId?: string; mode?: string; strategy?: string; autonomyLevel?: string }) {
+    return this.request<{ goal: any }>('/goals', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  async updateGoal(goalId: string, data: { status?: string; progress?: number; strategy?: string; autonomyLevel?: string; lessonsLearned?: string; addProgressNote?: string }) {
+    return this.request<{ goal: any }>(`/goals/${goalId}`, { method: 'PATCH', body: JSON.stringify(data) })
+  }
+
+  async deleteGoal(goalId: string) {
+    return this.request<{ ok: boolean }>(`/goals/${goalId}`, { method: 'DELETE' })
+  }
+
+  // ── Proactive Actions API ──
+
+  async getProactiveActions() {
+    return this.request<{ actions: any[] }>('/goals/proactive/pending')
+  }
+
+  async actOnProactiveAction(actionId: string, status: 'acted' | 'dismissed') {
+    return this.request<{ ok: boolean }>(`/goals/proactive/${actionId}`, { method: 'PATCH', body: JSON.stringify({ status }) })
+  }
+
   // Mood check for family/friend chats
   async checkMood(chatId: string) {
     return this.request<{ mood: string; note: string | null; confidence: number }>('/ai/tools/mood-check', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
