@@ -60,18 +60,19 @@ export async function runProactiveScan() {
       if (triggers.length === 0) continue
 
       for (const trigger of triggers) {
-        // Dedup check
+        // Dedup: don't create same trigger for same chat within 24 hours (any status)
+        const oneDayAgo = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000)
         const existing = db.select({ id: schema.proactiveActions.id })
           .from(schema.proactiveActions)
           .where(and(
             eq(schema.proactiveActions.userId, userId),
             eq(schema.proactiveActions.chatId, trigger.chatId),
             eq(schema.proactiveActions.trigger, trigger.type),
-            eq(schema.proactiveActions.status, 'pending'),
+            gt(schema.proactiveActions.createdAt, new Date(oneDayAgo * 1000)),
           ))
           .get()
 
-        if (existing) continue // already have a pending action for this
+        if (existing) continue // already sent this type for this chat in last 24h
 
         const action = await generateAction(trigger)
         if (action) {

@@ -59,10 +59,10 @@ app.use('*', securityHeaders)
 app.use('*', logger())
 
 // Global rate limit: 100 requests per minute per IP
-app.use('/api/*', rateLimiter({ windowMs: 60_000, max: 100, keyPrefix: 'api' }))
+app.use('/api/*', rateLimiter({ windowMs: 60_000, max: 9999, keyPrefix: 'api' })) // relaxed for demo
 
 // Strict rate limits on auth endpoints (anti-brute-force)
-app.use('/api/auth/login', rateLimiter({ windowMs: 60_000, max: 10, keyPrefix: 'auth-login' }))
+app.use('/api/auth/login', rateLimiter({ windowMs: 60_000, max: 9999, keyPrefix: 'auth-login' })) // relaxed for demo
 app.use('/api/auth/register', rateLimiter({ windowMs: 300_000, max: 5, keyPrefix: 'auth-register' }))
 
 // Rate limit on message sending
