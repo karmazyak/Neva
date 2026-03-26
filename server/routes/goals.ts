@@ -10,7 +10,7 @@ app.use('*', authMiddleware)
 
 // GET /api/goals/proactive/pending — get pending proactive actions
 app.get('/proactive/pending', async (c) => {
-  const userId = (c as any).userId as string
+  const userId = c.get('userId') as string
 
   const actions = db.select().from(schema.proactiveActions)
     .where(and(
@@ -26,7 +26,7 @@ app.get('/proactive/pending', async (c) => {
 
 // PATCH /api/goals/proactive/:id — act on or dismiss a proactive action
 app.patch('/proactive/:id', async (c) => {
-  const userId = (c as any).userId as string
+  const userId = c.get('userId') as string
   const actionId = c.req.param('id')
   const { status } = await c.req.json<{ status: 'acted' | 'dismissed' }>()
 
@@ -43,7 +43,7 @@ app.patch('/proactive/:id', async (c) => {
 
 // GET /api/goals/chat/:chatId — get active goals for a specific chat
 app.get('/chat/:chatId', async (c) => {
-  const userId = (c as any).userId as string
+  const userId = c.get('userId') as string
   const chatId = c.req.param('chatId')
 
   const goals = db.select().from(schema.userGoals)
@@ -62,7 +62,7 @@ app.get('/chat/:chatId', async (c) => {
 
 // GET /api/goals — list user's goals
 app.get('/', async (c) => {
-  const userId = (c as any).userId as string
+  const userId = c.get('userId') as string
   const statusFilter = c.req.query('status') || 'active'
   const chatId = c.req.query('chatId')
 
@@ -83,7 +83,7 @@ app.get('/', async (c) => {
 
 // GET /api/goals/:id — get single goal
 app.get('/:id', async (c) => {
-  const userId = (c as any).userId as string
+  const userId = c.get('userId') as string
   const goalId = c.req.param('id')
 
   const goal = db.select().from(schema.userGoals)
@@ -96,7 +96,7 @@ app.get('/:id', async (c) => {
 
 // POST /api/goals — create a new goal
 app.post('/', async (c) => {
-  const userId = (c as any).userId as string
+  const userId = c.get('userId') as string
   const body = await c.req.json<{
     goal: string
     chatId?: string
@@ -132,7 +132,7 @@ app.post('/', async (c) => {
 
 // PATCH /api/goals/:id — update a goal
 app.patch('/:id', async (c) => {
-  const userId = (c as any).userId as string
+  const userId = c.get('userId') as string
   const goalId = c.req.param('id')
   const body = await c.req.json<{
     status?: string
@@ -181,7 +181,7 @@ app.patch('/:id', async (c) => {
 
 // DELETE /api/goals/:id — delete a goal
 app.delete('/:id', async (c) => {
-  const userId = (c as any).userId as string
+  const userId = c.get('userId') as string
   const goalId = c.req.param('id')
 
   db.delete(schema.userGoals)
