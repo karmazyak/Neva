@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
+import { useLocation } from 'react-router-dom'
 
 /**
  * GuidedTour — replaces the slide-based onboarding with an in-context tour.
@@ -86,10 +87,22 @@ function saveTourState(state: TourState) {
 
 export function TourProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<TourState>(() => loadTourState())
+  const location = useLocation()
 
   useEffect(() => {
     saveTourState(state)
   }, [state])
+
+  // Auto-complete steps based on navigation (works on both mobile and desktop)
+  useEffect(() => {
+    if (!state.isActive) return
+    // User navigated to AI Chat → complete ai_tab step
+    if (state.currentStep === 'ai_tab' && location.pathname === '/ai-chat') {
+      setState(prev => ({ currentStep: 'briefing_button', isActive: true }))
+    }
+    // User navigated back to chats and opened a chat → complete context_button step
+    // (context_button is desktop-only, auto-complete when user opens any chat)
+  }, [location.pathname, state.isActive, state.currentStep])
 
   const isStepActive = useCallback((step: TourStep) => {
     return state.isActive && state.currentStep === step
