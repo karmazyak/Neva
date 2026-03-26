@@ -26,6 +26,7 @@ import {
 } from 'lucide-react'
 import FeatureDiscovery from '../components/FeatureDiscovery'
 import { trackAIAction } from '../components/AIValueTracker'
+import { PulseBeacon } from '../components/GuidedTour'
 
 interface PendingAction {
   id: string
@@ -458,38 +459,43 @@ export default function AIChat() {
 
             {/* Featured Actions — large cards for key features */}
             <div className="grid grid-cols-2 gap-2.5 max-w-sm w-full mb-3">
-              {QUICK_ACTIONS.filter(a => 'featured' in a && a.featured).map((action) => (
-                <button
-                  key={action.label}
-                  disabled={briefingLoading && 'isBriefing' in action}
-                  onClick={() => {
-                    if ('isBriefing' in action && action.isBriefing) {
-                      handleBriefing()
-                    } else if ('isMission' in action && action.isMission) {
-                      setMissionMode(true)
-                    }
-                  }}
-                  className={`flex flex-col items-start gap-1.5 p-3.5 border rounded-xl text-left transition-colors ${
-                    'isMission' in action && action.isMission
-                      ? 'bg-purple-500/10 border-purple-500/20 hover:bg-purple-500/20'
-                      : 'bg-accent/10 border-accent/20 hover:bg-accent/20'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    {'isBriefing' in action && briefingLoading ? (
-                      <Loader2 size={18} className="animate-spin text-accent" />
-                    ) : (
-                      <action.icon size={18} className={
-                        'isMission' in action && action.isMission ? 'text-purple-400' : 'text-accent'
-                      } />
-                    )}
-                    <span className={`text-sm font-medium ${
-                      'isMission' in action && action.isMission ? 'text-purple-300' : 'text-accent'
-                    }`}>{action.label}</span>
-                  </div>
-                  <span className="text-[11px] text-text-secondary">{action.desc}</span>
-                </button>
-              ))}
+              {QUICK_ACTIONS.filter(a => 'featured' in a && a.featured).map((action) => {
+                const isBriefing = 'isBriefing' in action && action.isBriefing
+                const isMission = 'isMission' in action && action.isMission
+                const tourStep = isBriefing ? 'briefing_button' as const : isMission ? 'mission_button' as const : undefined
+
+                const btn = (
+                  <button
+                    key={action.label}
+                    disabled={briefingLoading && isBriefing}
+                    onClick={() => {
+                      if (isBriefing) handleBriefing()
+                      else if (isMission) setMissionMode(true)
+                    }}
+                    className={`w-full flex flex-col items-start gap-1.5 p-3.5 border rounded-xl text-left transition-colors ${
+                      isMission
+                        ? 'bg-purple-500/10 border-purple-500/20 hover:bg-purple-500/20'
+                        : 'bg-accent/10 border-accent/20 hover:bg-accent/20'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {isBriefing && briefingLoading ? (
+                        <Loader2 size={18} className="animate-spin text-accent" />
+                      ) : (
+                        <action.icon size={18} className={isMission ? 'text-purple-400' : 'text-accent'} />
+                      )}
+                      <span className={`text-sm font-medium ${isMission ? 'text-purple-300' : 'text-accent'}`}>{action.label}</span>
+                    </div>
+                    <span className="text-[11px] text-text-secondary">{action.desc}</span>
+                  </button>
+                )
+
+                return tourStep ? (
+                  <PulseBeacon key={action.label} step={tourStep}>{btn}</PulseBeacon>
+                ) : (
+                  <div key={action.label}>{btn}</div>
+                )
+              })}
             </div>
 
             {/* Quick Actions Grid — secondary actions */}

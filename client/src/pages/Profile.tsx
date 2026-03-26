@@ -24,6 +24,8 @@ import {
 import NevaLogo from '../components/NevaLogo'
 import NotificationSettings from '../components/settings/NotificationSettings'
 import AIValueTracker from '../components/AIValueTracker'
+import { useTour } from '../components/GuidedTour'
+import { RotateCcw } from 'lucide-react'
 
 export default function Profile() {
   const navigate = useNavigate()
@@ -272,6 +274,11 @@ export default function Profile() {
           <AIValueTracker />
         </div>
 
+        {/* Restart Tour Button */}
+        <div className="mx-4 mb-4">
+          <RestartTourButton />
+        </div>
+
         {/* My Writing Style */}
         <div className="mx-4 bg-bg-secondary rounded-xl overflow-hidden mb-4">
           <button
@@ -428,5 +435,26 @@ export default function Profile() {
         </div>
       </div>
     </div>
+  )
+}
+
+function RestartTourButton() {
+  const { startTour, isActive } = useTour()
+  const navigate = useNavigate()
+
+  if (isActive) return null
+
+  return (
+    <button
+      onClick={() => { startTour(); navigate('/') }}
+      className="w-full flex items-center gap-3 bg-bg-secondary rounded-xl px-4 py-3 hover:bg-bg-hover transition-colors"
+    >
+      <RotateCcw size={20} className="text-accent" />
+      <div className="flex-1 text-left">
+        <div className="text-text-primary text-sm">Пройти тур заново</div>
+        <div className="text-text-secondary text-xs">Покажем ключевые фичи с пульсирующими подсказками</div>
+      </div>
+      <ChevronRight size={16} className="text-text-secondary" />
+    </button>
   )
 }

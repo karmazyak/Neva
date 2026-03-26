@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import { MessageCircle, Sparkles, Bot, User } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
+import { PulseBeacon } from './GuidedTour'
 
 const tabs = [
   { icon: MessageCircle, label: 'Chats', path: '/' },
@@ -28,7 +29,7 @@ export default function TabBar() {
             ? location.pathname === '/'
             : location.pathname.startsWith(tab.path)
 
-          return (
+          const button = (
             <button
               key={tab.path}
               onClick={() => navigate(tab.path)}
@@ -40,6 +41,13 @@ export default function TabBar() {
               <span className="text-[10px] font-medium leading-none">{tab.label}</span>
             </button>
           )
+
+          // Wrap AI tab with tour beacon
+          if (tab.path === '/ai-chat') {
+            return <PulseBeacon key={tab.path} step="ai_tab" className="flex-1 h-full">{button}</PulseBeacon>
+          }
+
+          return button
         })}
       </div>
     </nav>

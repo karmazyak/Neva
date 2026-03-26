@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Sparkles, X, ChevronRight, Loader2, AlertTriangle, Clock, MessageSquare, CheckCircle } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useChatStore } from '../../stores/chatStore'
+import { PulseBeacon } from '../GuidedTour'
 
 interface Nudge {
   chatId: string
@@ -75,7 +76,7 @@ export default function MorningBriefing() {
   }
 
   return (
-    <div className="mx-3 mt-2 mb-1 fade-in">
+    <PulseBeacon step="morning_briefing" className="mx-3 mt-2 mb-1 fade-in">
       <div className={`${isEmptyState ? 'bg-accent/3 border border-accent/10' : 'bg-accent/5 border border-accent/20'} rounded-xl overflow-hidden`}>
         {/* Empty coaching state */}
         {isEmptyState ? (
@@ -151,6 +152,6 @@ export default function MorningBriefing() {
           </>
         )}
       </div>
-    </div>
+    </PulseBeacon>
   )
 }

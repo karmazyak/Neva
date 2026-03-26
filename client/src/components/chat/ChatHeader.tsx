@@ -3,6 +3,7 @@ import { ArrowLeft, Bot, MoreVertical, Search, BellOff, Bell, Trash2, Sparkles, 
 import { useNotificationStore } from '../../stores/notificationStore'
 import { api } from '../../lib/api'
 import { showToast } from '../ui/Toast'
+import { PulseBeacon } from '../GuidedTour'
 
 interface ChatHeaderProps {
   chat: any
@@ -131,13 +132,15 @@ export default function ChatHeader({ chat, onBack, onAgentToggle, typing, hasAge
       </button>
 
       {onToggleContextPanel && (
-        <button onClick={onToggleContextPanel}
-          className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-            contextPanelOpen ? 'bg-accent/15 text-accent border border-accent/30' : 'bg-bg-input text-text-secondary hover:text-text-primary border border-border'
-          }`} title={contextPanelOpen ? 'Закрыть панель контекста' : 'Открыть AI контекст'}>
-          {contextPanelOpen ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
-          <span>Контекст</span>
-        </button>
+        <PulseBeacon step="context_button">
+          <button onClick={onToggleContextPanel}
+            className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+              contextPanelOpen ? 'bg-accent/15 text-accent border border-accent/30' : 'bg-bg-input text-text-secondary hover:text-text-primary border border-border'
+            }`} title={contextPanelOpen ? 'Закрыть панель контекста' : 'Открыть AI контекст'}>
+            {contextPanelOpen ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+            <span>Контекст</span>
+          </button>
+        </PulseBeacon>
       )}
 
       <button onClick={onAgentToggle}
