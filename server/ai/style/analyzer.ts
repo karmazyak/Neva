@@ -161,26 +161,11 @@ export async function analyzeStyle(
   // 3. Compute metrics
   const metrics = computeMetrics(messageTexts)
 
-  // 4. Get context (previous messages for few-shot)
-  const messagesWithContext: Array<{ content: string; context?: string }> = []
-
-  for (const msg of decryptedMessages) {
-    // Try to find the previous message in the same chat (from someone else)
-    const prevMsgRaw = db.select({ content: schema.messages.content })
-      .from(schema.messages)
-      .where(and(
-        eq(schema.messages.chatId, msg.chatId),
-        eq(schema.messages.visibility, 'normal'),
-        eq(schema.messages.type, 'text'),
-      ))
-      .orderBy(desc(schema.messages.createdAt))
-      .limit(2)
-      .all()
-
-    const contextRaw = prevMsgRaw.length > 1 ? prevMsgRaw[1].content : undefined
-    const context = contextRaw ? await decrypt(contextRaw) : undefined
-    messagesWithContext.push({ content: msg.content, context })
-  }
+  // 4. Get context (previous messages for few-shot) — use adjacent messages, no N+1
+  const messagesWithContext: Array<{ content: string; context?: string }> = decryptedMessages.map((msg, i) => ({
+    content: msg.content,
+    context: i > 0 ? decryptedMessages[i - 1].content : undefined,
+  }))
 
   // 5. Select characteristic messages for LLM analysis
   const selected = selectCharacteristicMessages(messagesWithContext, 80)

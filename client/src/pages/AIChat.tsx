@@ -191,6 +191,8 @@ export default function AIChat() {
   const handleBriefing = async () => {
     setBriefingLoading(true)
     trackAIAction('briefingsViewed')
+    // Clear cached nudges so MorningBriefing can also refresh
+    sessionStorage.removeItem('nudges_loaded')
     setMessages(prev => [...prev, { role: 'user', content: '☕ Утренний брифинг' }])
     try {
       const data = await api.getNudges()
@@ -215,14 +217,6 @@ export default function AIChat() {
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: text,
-        pendingActions: nudges.filter((n: any) => n.priority === 'high').map((n: any) => ({
-          id: n.chatId,
-          type: 'send_message' as const,
-          chatId: n.chatId,
-          chatName: n.chatName,
-          content: `Открыть чат: ${n.chatName}`,
-          status: undefined,
-        })),
       }])
     } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Не удалось загрузить брифинг. Попробуй позже.' }])
