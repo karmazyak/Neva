@@ -454,5 +454,95 @@ try {
   sqlite.exec(`UPDATE users SET onboarding_version = ${currentVersion} WHERE onboarding_version < ${currentVersion} OR onboarding_version IS NULL`)
 } catch {}
 
+// ========== Persistent Goals & Proactive Actions (Strategic Advisor 2.0) ==========
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS user_goals (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    chat_id TEXT,
+    goal TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'strategic',
+    status TEXT NOT NULL DEFAULT 'active',
+    strategy TEXT,
+    progress INTEGER DEFAULT 0,
+    progress_notes TEXT DEFAULT '[]',
+    autonomy_level TEXT NOT NULL DEFAULT 'semi',
+    completed_at INTEGER,
+    lessons_learned TEXT,
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_goals_user ON user_goals(user_id);
+  CREATE INDEX IF NOT EXISTS idx_user_goals_status ON user_goals(user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_user_goals_chat ON user_goals(user_id, chat_id);
+`)
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS proactive_actions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    chat_id TEXT,
+    goal_id TEXT,
+    type TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    draft_message TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_proactive_actions_user ON proactive_actions(user_id, status);
+`)
+
+// ========== Demo Goals for ivan account ==========
+try {
+  const ivan = sqlite.prepare('SELECT id FROM users WHERE username = ?').get('ivan') as { id: string } | undefined
+  if (ivan) {
+    const existingGoals = sqlite.prepare('SELECT COUNT(*) as c FROM user_goals WHERE user_id = ?').get(ivan.id) as { c: number }
+    if (existingGoals.c === 0) {
+      // Get some chat IDs
+      const chats = sqlite.prepare(`
+        SELECT cm.chat_id, c.name FROM chat_members cm
+        JOIN chats c ON c.id = cm.chat_id
+        WHERE cm.user_id = ? AND c.type = 'private'
+        LIMIT 3
+      `).all(ivan.id) as Array<{ chat_id: string; name: string }>
+
+      if (chats.length >= 2) {
+        // Strategic goal
+        sqlite.prepare(`INSERT INTO user_goals (id, user_id, chat_id, goal, mode, status, strategy, progress, progress_notes, autonomy_level, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'strategic', 'in_progress', ?, 35, ?, 'semi', unixepoch(), unixepoch())`).run(
+          crypto.randomUUID(), ivan.id, chats[0].chat_id,
+          'Договориться о встрече на следующей неделе',
+          'Мягкое предложение с конкретным временем',
+          JSON.stringify([
+            { date: new Date(Date.now() - 86400000).toISOString(), note: 'Начал обсуждение, собеседник заинтересован' },
+            { date: new Date().toISOString(), note: 'Ждём ответ на предложение времени' },
+          ])
+        )
+
+        // Care goal
+        sqlite.prepare(`INSERT INTO user_goals (id, user_id, chat_id, goal, mode, status, strategy, progress, progress_notes, autonomy_level, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'care', 'active', NULL, 0, '[]', 'semi', unixepoch(), unixepoch())`).run(
+          crypto.randomUUID(), ivan.id, chats[1].chat_id,
+          'Чаще писать и поддерживать связь'
+        )
+
+        // Proactive action demo
+        sqlite.prepare(`INSERT INTO proactive_actions (id, user_id, chat_id, type, trigger, title, body, draft_message, status, created_at)
+          VALUES (?, ?, ?, 'suggestion', 'silence', ?, ?, ?, 'pending', unixepoch())`).run(
+          crypto.randomUUID(), ivan.id, chats[1].chat_id,
+          'Давно не общались',
+          'Прошло больше недели с последнего сообщения. Может, стоит написать?',
+          'Привет! Как у тебя дела? Давно не общались 😊'
+        )
+
+        console.log('Demo goals seeded for ivan')
+      }
+    }
+  }
+} catch (e) { console.log('Demo goals seed skipped:', e) }
+
 console.log('Database migrated successfully!')
 sqlite.close()

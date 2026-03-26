@@ -16,6 +16,7 @@ import styleRoutes from './routes/style'
 import pushRoutes from './routes/push'
 import savedRoutes from './routes/saved'
 import folderRoutes from './routes/folders'
+import goalRoutes from './routes/goals'
 import { startScheduler } from './scheduler'
 import { existsSync } from 'fs'
 import { join } from 'path'
@@ -86,6 +87,7 @@ app.route('/api/ai/style', styleRoutes)
 app.route('/api/push', pushRoutes)
 app.route('/api/saved', savedRoutes)
 app.route('/api/folders', folderRoutes)
+app.route('/api/goals', goalRoutes)
 
 // Get available AI models (requires auth)
 app.get('/api/models', authMiddleware, async (c) => {

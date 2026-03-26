@@ -303,3 +303,39 @@ export type ChatFolder = typeof chatFolders.$inferSelect
 export type ScheduledMessage = typeof scheduledMessages.$inferSelect
 export type AgentReview = typeof agentReviews.$inferSelect
 export type MissionHistory = typeof missionHistory.$inferSelect
+
+// ── Persistent Goals (Strategic Advisor 2.0 + Care Mode) ──
+
+export const userGoals = sqliteTable('user_goals', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  chatId: text('chat_id'),                    // NULL = global goal
+  goal: text('goal').notNull(),
+  mode: text('mode', { enum: ['strategic', 'care'] }).notNull().default('strategic'),
+  status: text('status', { enum: ['active', 'in_progress', 'paused', 'completed', 'failed'] }).notNull().default('active'),
+  strategy: text('strategy'),                 // chosen strategy name/description
+  progress: integer('progress').default(0),   // 0-100
+  progressNotes: text('progress_notes', { mode: 'json' }).$type<Array<{ date: string; note: string }>>().default([]),
+  autonomyLevel: text('autonomy_level', { enum: ['semi', 'autonomous'] }).notNull().default('semi'),
+  completedAt: integer('completed_at', { mode: 'timestamp' }),
+  lessonsLearned: text('lessons_learned'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+export const proactiveActions = sqliteTable('proactive_actions', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  chatId: text('chat_id'),
+  goalId: text('goal_id'),
+  type: text('type', { enum: ['suggestion', 'draft_ready', 'alert', 'auto_sent'] }).notNull(),
+  trigger: text('trigger').notNull(),          // what caused it: pattern_detected, silence, mood_change, schedule, goal_progress
+  title: text('title').notNull(),
+  body: text('body'),
+  draftMessage: text('draft_message'),
+  status: text('status', { enum: ['pending', 'acted', 'dismissed', 'auto_executed'] }).notNull().default('pending'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+export type UserGoal = typeof userGoals.$inferSelect
+export type ProactiveAction = typeof proactiveActions.$inferSelect

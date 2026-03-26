@@ -138,6 +138,21 @@ aiChat.post('/chat', async (c) => {
   }
   systemPrompt += `\n\nТекущий userId пользователя: "${userId}". Когда пользователь говорит "в моём стиле" или "как я пишу" — используй targetUserId="${userId}" (его собственный ID). Когда он просит "напиши Gabe" без уточнения стиля — тоже пиши в стиле пользователя (targetUserId="${userId}"), а НЕ в стиле получателя.`
 
+  // Inject active goals into system prompt so agent always knows about them
+  try {
+    const { getAllActiveGoals } = await import('./ai-tools')
+    const goals = getAllActiveGoals(userId)
+    if (goals.length > 0) {
+      systemPrompt += `\n\n═══ АКТИВНЫЕ ЦЕЛИ ПОЛЬЗОВАТЕЛЯ ═══`
+      for (const g of goals) {
+        const chatLabel = g.chatId ? `(чат: ${g.chatId})` : '(глобальная)'
+        systemPrompt += `\n• [${g.mode.toUpperCase()}] "${g.goal}" ${chatLabel} — прогресс: ${g.progress}%${g.strategy ? `, стратегия: ${g.strategy}` : ''}`
+      }
+      systemPrompt += `\n\nВАЖНО: Цели ПЕРСИСТЕНТНЫ. Они живут пока пользователь их не закроет. Каждое взаимодействие в чате с целью должно оцениваться в контексте этой цели. Если видишь прогресс — отметь. Если цель достигнута — поздравь и предложи закрыть.`
+      systemPrompt += `\n═══ КОНЕЦ ЦЕЛЕЙ ═══`
+    }
+  } catch {}
+
   // Mission mode: generate structured plan before autopilot
   let missionPlan: MissionPlan | null = null
 

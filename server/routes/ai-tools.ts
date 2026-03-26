@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { authMiddleware } from '../middleware/auth'
 import { chatCompletion } from '../ai/openrouter'
 import { db, schema } from '../db'
-import { eq, and, desc } from 'drizzle-orm'
+import { eq, and, desc, inArray, sql } from 'drizzle-orm'
 import { decrypt } from '../security/encryption'
 import { extractPersonaProfile, simulateWithPersona, getCachedPersona, personaToPrompt, updatePersonaMood, type PersonaProfile } from '../ai/persona-profiler'
 import { getModelConfig } from '../ai/model-router'
@@ -1082,17 +1082,117 @@ aiTools.post('/persona', async (c) => {
 })
 
 // ============================
-// Active Goals store (exported for tone advisor)
+// Active Goals — persistent in DB (replaces in-memory Map)
 // ============================
-export const activeGoals = new Map<string, { goal: string; strategy: string; chatId: string; createdAt: number }>()
 
-// Clean expired goals (TTL 24h)
-function cleanExpiredGoals() {
-  const now = Date.now()
-  const TTL = 24 * 60 * 60 * 1000
-  for (const [key, val] of activeGoals) {
-    if (now - val.createdAt > TTL) activeGoals.delete(key)
+/**
+ * Get active goal for a user+chat pair from the database.
+ * Returns null if no active goal exists.
+ */
+export function getActiveGoal(userId: string, chatId: string): { goal: string; strategy: string; chatId: string } | null {
+  const row = db.select()
+    .from(schema.userGoals)
+    .where(and(
+      eq(schema.userGoals.userId, userId),
+      eq(schema.userGoals.chatId, chatId),
+      inArray(schema.userGoals.status, ['active', 'in_progress']),
+    ))
+    .orderBy(desc(schema.userGoals.updatedAt))
+    .limit(1)
+    .get()
+
+  if (!row) return null
+  return { goal: row.goal, strategy: row.strategy || '', chatId: row.chatId || chatId }
+}
+
+/**
+ * Get ALL active goals for a user (for briefing/context).
+ */
+export function getAllActiveGoals(userId: string): Array<{ id: string; goal: string; strategy: string; chatId: string | null; progress: number; mode: string }> {
+  return db.select()
+    .from(schema.userGoals)
+    .where(and(
+      eq(schema.userGoals.userId, userId),
+      inArray(schema.userGoals.status, ['active', 'in_progress']),
+    ))
+    .orderBy(desc(schema.userGoals.updatedAt))
+    .all()
+    .map(r => ({
+      id: r.id,
+      goal: r.goal,
+      strategy: r.strategy || '',
+      chatId: r.chatId,
+      progress: r.progress || 0,
+      mode: r.mode,
+    }))
+}
+
+/**
+ * Update goal progress from AI agent.
+ */
+export function updateGoalProgress(goalId: string, userId: string, progress: number, note?: string) {
+  const existing = db.select().from(schema.userGoals)
+    .where(and(eq(schema.userGoals.id, goalId), eq(schema.userGoals.userId, userId)))
+    .get()
+  if (!existing) return
+
+  const updates: Record<string, any> = {
+    progress: Math.min(100, Math.max(0, progress)),
+    updatedAt: sql`(unixepoch())`,
   }
+  if (progress >= 100) {
+    updates.status = 'completed'
+    updates.completedAt = sql`(unixepoch())`
+  } else if (progress > 0 && existing.status === 'active') {
+    updates.status = 'in_progress'
+  }
+
+  if (note) {
+    const notes = (existing.progressNotes || []) as Array<{ date: string; note: string }>
+    notes.push({ date: new Date().toISOString(), note })
+    updates.progressNotes = JSON.stringify(notes)
+  }
+
+  db.update(schema.userGoals).set(updates)
+    .where(eq(schema.userGoals.id, goalId))
+    .run()
+}
+
+// Legacy compatibility: keep the old export name for any other imports
+export const activeGoals = {
+  get(key: string) {
+    const [userId, chatId] = key.split(':')
+    return getActiveGoal(userId, chatId)
+  },
+  set(key: string, val: { goal: string; strategy: string; chatId: string; createdAt: number }) {
+    const [userId] = key.split(':')
+    // Upsert: if active goal exists for this chat, update it; otherwise create
+    const existing = db.select().from(schema.userGoals)
+      .where(and(
+        eq(schema.userGoals.userId, userId),
+        eq(schema.userGoals.chatId, val.chatId),
+        inArray(schema.userGoals.status, ['active', 'in_progress']),
+      )).get()
+
+    if (existing) {
+      db.update(schema.userGoals).set({
+        goal: val.goal,
+        strategy: val.strategy,
+        status: 'in_progress',
+        updatedAt: sql`(unixepoch())`,
+      }).where(eq(schema.userGoals.id, existing.id)).run()
+    } else {
+      db.insert(schema.userGoals).values({
+        id: crypto.randomUUID(),
+        userId,
+        chatId: val.chatId,
+        goal: val.goal,
+        strategy: val.strategy,
+        status: 'in_progress',
+        mode: 'strategic',
+      }).run()
+    }
+  },
 }
 
 // ============================
@@ -1317,7 +1417,6 @@ aiTools.post('/set-goal', async (c) => {
   const { chatId, goal, strategy } = await c.req.json()
   if (!chatId || !goal) return c.json({ error: 'chatId and goal required' }, 400)
 
-  cleanExpiredGoals()
   activeGoals.set(`${userId}:${chatId}`, { goal, strategy: strategy || '', chatId, createdAt: Date.now() })
   return c.json({ ok: true })
 })
