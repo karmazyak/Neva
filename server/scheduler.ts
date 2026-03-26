@@ -7,8 +7,10 @@ import { chatCompletion, type ChatMessage } from './ai/openrouter'
 import { sendToUser, broadcastToChat } from './ws'
 import { sql } from 'drizzle-orm'
 import { encrypt, decrypt } from './security/encryption'
+import { runProactiveScan } from './ai/proactive-engine'
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null
+let proactiveInterval: ReturnType<typeof setInterval> | null = null
 
 export function startScheduler() {
   if (schedulerInterval) return
@@ -17,6 +19,16 @@ export function startScheduler() {
   schedulerInterval = setInterval(() => {
     checkSchedules().catch(err => console.error('Scheduler error:', err))
   }, 60_000) // every minute
+
+  // Proactive Engine — runs every 15 minutes
+  // First run after 2 min delay (let server warm up)
+  setTimeout(() => {
+    runProactiveScan().catch(err => console.error('Proactive scan error:', err))
+  }, 2 * 60 * 1000)
+
+  proactiveInterval = setInterval(() => {
+    runProactiveScan().catch(err => console.error('Proactive scan error:', err))
+  }, 15 * 60 * 1000) // every 15 minutes
 }
 
 export function stopScheduler() {

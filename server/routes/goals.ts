@@ -158,4 +158,39 @@ app.get('/chat/:chatId', async (c) => {
   return c.json({ goals })
 })
 
+// ═══ Proactive Actions ═══
+
+// GET /api/goals/proactive/pending — get pending proactive actions
+app.get('/proactive/pending', async (c) => {
+  const userId = (c as any).userId as string
+
+  const actions = db.select().from(schema.proactiveActions)
+    .where(and(
+      eq(schema.proactiveActions.userId, userId),
+      eq(schema.proactiveActions.status, 'pending'),
+    ))
+    .orderBy(desc(schema.proactiveActions.createdAt))
+    .limit(10)
+    .all()
+
+  return c.json({ actions })
+})
+
+// PATCH /api/goals/proactive/:id — act on or dismiss a proactive action
+app.patch('/proactive/:id', async (c) => {
+  const userId = (c as any).userId as string
+  const actionId = c.req.param('id')
+  const { status } = await c.req.json<{ status: 'acted' | 'dismissed' }>()
+
+  db.update(schema.proactiveActions)
+    .set({ status })
+    .where(and(
+      eq(schema.proactiveActions.id, actionId),
+      eq(schema.proactiveActions.userId, userId),
+    ))
+    .run()
+
+  return c.json({ ok: true })
+})
+
 export default app

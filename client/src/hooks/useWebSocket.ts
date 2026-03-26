@@ -140,6 +140,11 @@ export function useWebSocket(token: string | null) {
               useChatStore.getState().removeReactionFromMessage(data.chatId, data.messageId, data.emoji, data.userId)
               break
 
+            case 'proactive_action':
+              // Dispatch custom event for ProactiveCard component
+              window.dispatchEvent(new CustomEvent('proactive_action', { detail: data }))
+              break
+
             case 'mention':
               if (Notification.permission === 'granted') {
                 new Notification(`${data.mentionedBy} mentioned you`, { body: data.content })
