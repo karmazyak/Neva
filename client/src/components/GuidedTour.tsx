@@ -193,6 +193,14 @@ export function PulseBeacon({ step, children, className = '', onClick }: PulseBe
  * TourProgress — floating indicator showing tour progress.
  * Allows skipping the tour.
  */
+const TOUR_STEP_LABELS: Record<string, string> = {
+  morning_briefing: '👆 Нажми на утренний брифинг',
+  ai_tab: '👇 Открой вкладку AI',
+  briefing_button: '☕ Нажми "Брифинг"',
+  mission_button: '🚀 Попробуй "Миссия"',
+  context_button: '🧠 Открой "Контекст" в чате',
+}
+
 export function TourProgress() {
   const { isActive, currentStep, skipTour } = useTour()
 
@@ -200,28 +208,18 @@ export function TourProgress() {
 
   const stepIndex = TOUR_STEPS.indexOf(currentStep)
   const totalSteps = TOUR_STEPS.length - 1 // exclude 'completed'
+  const label = TOUR_STEP_LABELS[currentStep] || ''
 
   return (
     <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] fade-in">
-      <div className="bg-bg-secondary/95 backdrop-blur-sm border border-accent/20 rounded-full px-4 py-2 shadow-lg flex items-center gap-3">
-        <div className="flex gap-1">
-          {Array.from({ length: totalSteps }).map((_, i) => (
-            <div
-              key={i}
-              className={`h-1.5 rounded-full transition-all duration-300 ${
-                i < stepIndex ? 'w-4 bg-accent' :
-                i === stepIndex ? 'w-6 bg-accent animate-pulse' :
-                'w-4 bg-bg-input'
-              }`}
-            />
-          ))}
-        </div>
+      <div className="bg-bg-secondary/95 backdrop-blur-sm border border-accent/20 rounded-2xl px-4 py-2.5 shadow-lg flex items-center gap-3">
+        <span className="text-xs text-text-primary font-medium">{label}</span>
         <span className="text-[11px] text-text-secondary">{stepIndex + 1}/{totalSteps}</span>
         <button
           onClick={skipTour}
-          className="text-[11px] text-text-secondary hover:text-text-primary transition-colors"
+          className="text-[11px] text-text-secondary hover:text-text-primary transition-colors ml-1"
         >
-          Пропустить
+          ✕
         </button>
       </div>
     </div>

@@ -3,6 +3,7 @@ import { Sparkles, X, ChevronRight, Loader2, AlertTriangle, Clock, MessageSquare
 import { api } from '../../lib/api'
 import { useChatStore } from '../../stores/chatStore'
 import { PulseBeacon } from '../GuidedTour'
+import { showToast } from '../ui/Toast'
 
 interface Nudge {
   chatId: string
@@ -19,7 +20,7 @@ export default function MorningBriefing() {
   const [dismissed, setDismissed] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [loaded, setLoaded] = useState(false)
-  const { setActiveChat } = useChatStore()
+  const { setActiveChat, chats } = useChatStore()
 
   useEffect(() => {
     // Only load once per session
@@ -135,7 +136,14 @@ export default function MorningBriefing() {
                 {nudges.map((nudge, i) => (
                   <button
                     key={i}
-                    onClick={() => setActiveChat(nudge.chatId)}
+                    onClick={() => {
+                      const chatExists = chats.some(c => c.id === nudge.chatId)
+                      if (chatExists) {
+                        setActiveChat(nudge.chatId)
+                      } else {
+                        showToast(`Чат "${nudge.chatName}" недоступен`, 'error')
+                      }
+                    }}
                     className="w-full flex items-start gap-2 p-2 rounded-lg hover:bg-bg-hover transition-colors text-left"
                   >
                     <span className={`mt-0.5 ${priorityColor(nudge.priority)}`}>
