@@ -8,6 +8,10 @@ import { decrypt } from '../security/encryption'
 import { extractPersonaProfile, simulateWithPersona, getCachedPersona, personaToPrompt, updatePersonaMood, type PersonaProfile } from '../ai/persona-profiler'
 import { getModelConfig } from '../ai/model-router'
 import { PROMPTS } from '../ai/prompts'
+import { getContactIntel, getOrCreateContactIntel, updatePersona as ciUpdatePersona, recordMood as ciRecordMood, getLatestMood, getMoodTrend } from '../ai/contact-intelligence'
+import { getMemoryPromptBlock, extractAndPersistFacts, getActiveMemories } from '../ai/memory-manager'
+import { getGraphPromptBlock, getRelevantGraphContext, extractAndMergeGraph } from '../ai/knowledge-graph'
+import { getBaseline, calculateBaseline, updateBaseline } from '../ai/contact-intelligence'
 
 const aiTools = new Hono()
 aiTools.use('*', authMiddleware)
@@ -518,175 +522,73 @@ aiTools.post('/contact-context', async (c) => {
 // ============================
 // Proactive Nudges — morning briefing across all chats
 // ============================
+/**
+ * Phase 6: Unified nudges endpoint — reads from proactiveActions DB.
+ * The proactive-engine is now the sole generator of nudges.
+ * Optional ?forceRefresh=true triggers an immediate scan for this user.
+ */
 aiTools.post('/nudges', async (c) => {
   const userId = c.get('userId')
 
   try {
-    // Get all user's chats with unread or recent activity
-    const memberChats = db
-      .select({
-        chatId: schema.chatMembers.chatId,
-        chatName: schema.chats.name,
-        chatType: schema.chats.type,
-      })
-      .from(schema.chatMembers)
-      .innerJoin(schema.chats, eq(schema.chatMembers.chatId, schema.chats.id))
-      .where(eq(schema.chatMembers.userId, userId))
-      .all()
+    const { forceRefresh } = await c.req.json().catch(() => ({ forceRefresh: false }))
 
-    if (memberChats.length === 0) {
-      return c.json({ nudges: [], summary: null })
+    // Optional: trigger immediate scan for this user
+    if (forceRefresh) {
+      try {
+        const { runProactiveScanForUser } = await import('../ai/proactive-engine')
+        await runProactiveScanForUser(userId)
+      } catch {}
     }
 
-    // For each chat, get last few messages to analyze
-    const chatSummaries: { chatId: string; chatName: string; preview: string; messageCount: number }[] = []
+    // Read pending proactive actions from DB
+    const actions = db.select()
+      .from(schema.proactiveActions)
+      .where(and(
+        eq(schema.proactiveActions.userId, userId),
+        eq(schema.proactiveActions.status, 'pending'),
+      ))
+      .orderBy(desc(schema.proactiveActions.createdAt))
+      .limit(10)
+      .all()
 
-    for (const chat of memberChats.slice(0, 10)) {
-      const msgs = db
-        .select({
-          content: schema.messages.content,
-          senderName: schema.users.displayName,
-          senderId: schema.messages.senderId,
-          createdAt: schema.messages.createdAt,
-        })
-        .from(schema.messages)
-        .leftJoin(schema.users, eq(schema.messages.senderId, schema.users.id))
-        .where(and(eq(schema.messages.chatId, chat.chatId), eq(schema.messages.visibility, 'normal')))
-        .orderBy(desc(schema.messages.createdAt))
-        .limit(10)
-        .all()
-        .reverse()
-
-      if (msgs.length === 0) continue
-
-      const decrypted = await Promise.all(msgs.map(async m => ({ ...m, content: await decrypt(m.content) })))
-      const preview = decrypted.filter(m => m.content && !m.content.startsWith('/uploads/')).map(m => `${m.senderName}: ${m.content}`).join('\n')
-
-      if (preview.trim()) {
-        chatSummaries.push({
-          chatId: chat.chatId,
-          chatName: chat.chatName || 'Chat',
-          preview,
-          messageCount: msgs.length,
-        })
+    // Resolve chat names
+    const nudges = await Promise.all(actions.map(async (a) => {
+      let chatName = 'Chat'
+      if (a.chatId) {
+        const chat = db.select({ name: schema.chats.name })
+          .from(schema.chats)
+          .where(eq(schema.chats.id, a.chatId))
+          .get()
+        chatName = chat?.name || 'Chat'
       }
-    }
 
-    if (chatSummaries.length === 0) {
-      return c.json({ nudges: [], summary: null })
-    }
+      // Map trigger to priority
+      const priorityMap: Record<string, string> = {
+        mood: 'high',
+        burst: 'high',
+        unanswered: 'medium',
+        goal_stall: 'medium',
+        silence: 'low',
+      }
 
-    // Load relationship types for all chats
-    const memberRelations = db.select({
-      chatId: schema.chatMembers.chatId,
-      relationshipType: schema.chatMembers.relationshipType,
-    }).from(schema.chatMembers)
-      .where(eq(schema.chatMembers.userId, userId))
-      .all()
-    const relMap = new Map(memberRelations.map(m => [m.chatId, m.relationshipType]))
+      return {
+        id: a.id,
+        chatId: a.chatId,
+        chatName,
+        type: a.trigger,
+        text: a.body || a.title,
+        title: a.title,
+        priority: (a as any).priority || priorityMap[a.trigger] || 'medium',
+        draftMessage: a.draftMessage,
+      }
+    }))
 
-    // Split chats by relationship type
-    const workChats = chatSummaries.filter(c => {
-      const rel = relMap.get(c.chatId)
-      return !rel || rel === 'work' || rel === 'client'
-    })
-    const personalChats = chatSummaries.filter(c => {
-      const rel = relMap.get(c.chatId)
-      return rel === 'family' || rel === 'friend'
-    })
+    const summary = nudges.length > 0
+      ? `${nudges.length} дел требуют внимания.`
+      : null
 
-    const nudgeConfig = getModelConfig('analysis')
-    let allNudges: any[] = []
-    let summary: string | null = null
-
-    // Work nudges
-    if (workChats.length > 0) {
-      const workPreviews = workChats.map(s => `[${s.chatName}]:\n${s.preview}`).join('\n\n')
-      try {
-        const workResult = await chatCompletion({
-          model: nudgeConfig.model,
-          messages: [
-            {
-              role: 'system',
-              content: `You are a smart messaging assistant. Analyze recent conversations and provide proactive nudges.
-
-Return JSON: {
-  "nudges": [
-    { "chatId": "...", "chatName": "...", "type": "unanswered|deadline|decision|followup|silence", "text": "short description", "priority": "high|medium|low" }
-  ],
-  "summary": "1-2 sentence morning briefing overview"
-}
-
-Types:
-- unanswered: someone asked a question that wasn't answered
-- deadline: a deadline was mentioned
-- decision: a decision is pending
-- followup: something needs follow-up
-- silence: unusual silence in an active chat
-
-Max 5 nudges, sorted by priority. Be concise. Respond in the same language as the messages.`
-            },
-            { role: 'user', content: workPreviews },
-          ],
-          temperature: nudgeConfig.temperature,
-          maxTokens: 512,
-        })
-        const parsed = JSON.parse(workResult)
-        allNudges.push(...(parsed.nudges || []))
-        summary = parsed.summary || null
-      } catch {}
-    }
-
-    // Personal nudges (family/friend) — different prompt
-    if (personalChats.length > 0) {
-      const personalPreviews = personalChats.map(s => `[${s.chatName}]:\n${s.preview}`).join('\n\n')
-      try {
-        const personalResult = await chatCompletion({
-          model: nudgeConfig.model,
-          messages: [
-            {
-              role: 'system',
-              content: `You are a relationship care assistant. Analyze personal conversations and suggest caring nudges.
-
-Return JSON: {
-  "nudges": [
-    { "chatId": "...", "chatName": "...", "type": "check_in|life_event|long_silence|mood_change|celebration", "text": "short caring suggestion", "priority": "high|medium|low" }
-  ]
-}
-
-Types:
-- check_in: person mentioned something important — time to ask how it went
-- life_event: birthday, anniversary, achievement — congratulate
-- long_silence: haven't talked in a while with someone close — reach out
-- mood_change: person's tone changed (shorter messages, less emojis) — check if okay
-- celebration: something positive happened — suggest celebrating
-
-Examples of celebration nudges:
-- "Лёха получил оффер! Может, поздравить?" (celebration)
-- "Вы с Машей переписываетесь каждый день уже месяц 🔥" (celebration)
-
-Rules:
-- Warm and caring, NOT task-oriented
-- "Ты давно не писал маме" > "Неотвеченное сообщение в чате Мама"
-- Max 3 nudges, prioritize by emotional importance
-- Same language as messages`
-            },
-            { role: 'user', content: personalPreviews },
-          ],
-          temperature: nudgeConfig.temperature,
-          maxTokens: 512,
-        })
-        const parsed = JSON.parse(personalResult)
-        // Personal nudges go first
-        allNudges = [...(parsed.nudges || []), ...allNudges]
-      } catch {}
-    }
-
-    if (!summary && allNudges.length > 0) {
-      summary = `${allNudges.length} дел требуют внимания.`
-    }
-
-    return c.json({ nudges: allNudges, summary })
+    return c.json({ nudges, summary })
   } catch (error: any) {
     return c.json({ error: error.message || 'Nudges failed' }, 500)
   }
@@ -813,12 +715,42 @@ Be concise and factual. Respond in the same language as the messages.`
 
     try {
       const parsed = JSON.parse(result)
+
+      // Phase 2: Persist extracted personalMemory facts to contactMemory DB
+      if (parsed.personalMemory && Array.isArray(parsed.personalMemory) && otherPerson) {
+        try {
+          const contactId = otherPerson.userId
+          const memoryFacts = parsed.personalMemory
+            .filter((m: any) => m.text)
+            .map((m: any) => ({
+              fact: m.text,
+              category: (['plans', 'life', 'dates', 'health', 'work'].includes(m.category)
+                ? (m.category === 'plans' ? 'plan' : m.category === 'life' ? 'life_event' : m.category === 'dates' ? 'date' : m.category)
+                : 'life_event') as any,
+              confidence: 0.85,
+            }))
+
+          if (memoryFacts.length > 0 && contactId) {
+            extractAndPersistFacts(userId, contactId, chatId, otherPerson.displayName || 'Contact', [])
+              .catch(() => {}) // non-blocking
+            // Also directly persist the LLM-extracted facts
+            const { persistFacts } = await import('../ai/memory-manager')
+            persistFacts(userId, contactId, chatId, memoryFacts)
+          }
+        } catch {}
+      }
+
+      // Merge persisted memories with freshly extracted ones
+      const persistedMemories = getActiveMemories(userId, chatId)
+
       return c.json({
         person: {
           name: otherPerson?.displayName || chat.name,
           username: otherPerson?.username,
           relationshipType: relType,
           ...parsed,
+          // Augment with persisted memories not in the fresh extraction
+          persistedMemories: persistedMemories.map(m => ({ text: m.fact, category: m.category })),
         }
       })
     } catch {
@@ -871,6 +803,15 @@ aiTools.post('/tone-check', async (c) => {
       ? `\nSENSITIVE TOPICS for this person: ${persona.dynamics.sensitiveTopics.join(', ')}. Be extra careful if the draft touches these.`
       : ''
 
+    // Phase 2: Inject persistent memory context
+    const memoryCtx = getMemoryPromptBlock(userId, chatId)
+
+    // Phase 4: Inject current mood from contact-intelligence
+    const currentMood = getLatestMood(userId, chatId)
+    const moodCtx = currentMood
+      ? `\nCONTACT'S CURRENT MOOD: ${currentMood.mood}${currentMood.note ? ` (${currentMood.note})` : ''}. Adapt tone suggestions accordingly.`
+      : ''
+
     const toneConfig = getModelConfig('evaluation')
     const result = await chatCompletion({
       model: toneConfig.model,
@@ -878,7 +819,7 @@ aiTools.post('/tone-check', async (c) => {
         {
           role: 'system',
           content: `You are a tone advisor for a messaging app. Given recent chat context and a draft message, determine if the draft tone might cause issues.
-${relCtx}${goalCtx}${sensitiveCtx}
+${relCtx}${goalCtx}${sensitiveCtx}${memoryCtx}${moodCtx}
 Return JSON: { "needsWarning": boolean, "warning": "short warning text if needed", "suggestion": "softened version if needed", "goalConflict": boolean }
 
 Rules:
@@ -960,6 +901,16 @@ aiTools.post('/simulate', async (c) => {
         chatContext,
         relType,
       )
+      // Persist to contact-intelligence DB
+      if (persona) {
+        try {
+          const contactId = decrypted.find(m => m.senderId !== userId)?.senderId
+          if (contactId) {
+            getOrCreateContactIntel(userId, contactId, chatId)
+            ciUpdatePersona(userId, chatId, persona)
+          }
+        } catch {}
+      }
     }
 
     // Stage 2: Simulate with persona (or fallback to enhanced legacy)
@@ -1074,6 +1025,15 @@ aiTools.post('/persona', async (c) => {
 
     const relType = await getRelationshipType(userId, chatId)
     const persona = await extractPersonaProfile(otherPerson, contactMessages, chatContext, relType)
+
+    // Persist to contact-intelligence DB
+    try {
+      const contactId = decrypted.find(m => m.senderId !== userId)?.senderId
+      if (contactId) {
+        getOrCreateContactIntel(userId, contactId, chatId)
+        ciUpdatePersona(userId, chatId, persona)
+      }
+    } catch {}
 
     return c.json({ persona, cached: false })
   } catch (error: any) {
@@ -1439,9 +1399,21 @@ aiTools.post('/mood-check', async (c) => {
       return c.json({ mood: 'normal', note: null, confidence: 0 })
     }
 
-    // Check persona cache first (free!)
+    // Check contact-intelligence DB first (persistent, free!)
+    const latestMood = getLatestMood(userId, chatId)
+    if (latestMood) {
+      // Check if still fresh (fewer than 3 new messages since last check)
+      const msgCount = db.select({ count: schema.messages.id })
+        .from(schema.messages).where(eq(schema.messages.chatId, chatId)).all().length
+      const cached = moodCheckCache.get(chatId)
+      if (cached && (msgCount - cached.messageCount) < MOOD_CHECK_MSG_THRESHOLD) {
+        return c.json({ mood: latestMood.mood, note: latestMood.note, confidence: latestMood.confidence })
+      }
+    }
+
+    // Fallback: check persona cache
     const persona = getCachedPersona(chatId, userId)
-    if (persona) {
+    if (persona && !latestMood) {
       const mood = persona.currentState.recentMood?.toLowerCase()
       const moodMap: Record<string, string> = {
         'sad': 'seems_off', 'upset': 'seems_off', 'anxious': 'seems_off', 'worried': 'seems_off',
@@ -1452,7 +1424,7 @@ aiTools.post('/mood-check', async (c) => {
       return c.json({ mood: mappedMood, note: persona.currentState.lastInteractionTone, confidence: 70 })
     }
 
-    // Check cache
+    // Check in-memory cache
     const msgCount = db.select({ count: schema.messages.id })
       .from(schema.messages).where(eq(schema.messages.chatId, chatId)).all().length
     const cached = moodCheckCache.get(chatId)
@@ -1498,6 +1470,11 @@ aiTools.post('/mood-check', async (c) => {
       const parsed = JSON.parse(moodResult.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim())
       moodCheckCache.set(chatId, { ...parsed, messageCount: msgCount, timestamp: Date.now() })
 
+      // Persist mood to contact-intelligence DB (always, not just concerning)
+      try {
+        ciRecordMood(userId, chatId, parsed.mood, parsed.note || null, parsed.confidence || 70)
+      } catch {}
+
       // D2: Update persona cache if mood is concerning
       if ((parsed.mood === 'seems_off' || parsed.mood === 'stressed') && parsed.confidence > 60) {
         updatePersonaMood(chatId, userId, parsed.mood === 'stressed' ? 'stressed' : 'seems_off')
@@ -1509,6 +1486,343 @@ aiTools.post('/mood-check', async (c) => {
     }
   } catch {
     return c.json({ mood: 'normal', note: null, confidence: 0 })
+  }
+})
+
+// ============================
+// Relationship Insights — psychologist-style analysis (cached 10min)
+// ============================
+const insightsCache = new Map<string, { data: any; at: number }>()
+const INSIGHTS_TTL = 10 * 60 * 1000 // 10 min
+
+aiTools.post('/relationship-insights', async (c) => {
+  const userId = c.get('userId')
+  const { chatId, forceRefresh } = await c.req.json()
+  if (!chatId) return c.json({ error: 'chatId required' }, 400)
+
+  // Check cache
+  const cacheKey = `${userId}:${chatId}`
+  const cached = insightsCache.get(cacheKey)
+  if (cached && !forceRefresh && Date.now() - cached.at < INSIGHTS_TTL) {
+    return c.json(cached.data)
+  }
+
+  try {
+    const chat = db.select().from(schema.chats).where(eq(schema.chats.id, chatId)).get()
+    if (!chat) return c.json({ error: 'Chat not found' }, 404)
+
+    // Get other person's info
+    const members = db.select({
+      userId: schema.chatMembers.userId,
+      displayName: schema.users.displayName,
+    }).from(schema.chatMembers)
+      .innerJoin(schema.users, eq(schema.chatMembers.userId, schema.users.id))
+      .where(eq(schema.chatMembers.chatId, chatId))
+      .all()
+    const otherPerson = members.find(m => m.userId !== userId) || members[0]
+    const personName = otherPerson?.displayName || chat.name || 'Contact'
+
+    // Get mood data
+    const moodTrend = getMoodTrend(userId, chatId)
+    const latestMood = getLatestMood(userId, chatId)
+
+    // Get memories
+    const memories = getActiveMemories(userId, chatId)
+    const memoryText = memories.map(m => `[${m.category}] ${m.fact}`).join('\n')
+
+    // v2: Get knowledge graph context
+    const graphContext = getRelevantGraphContext(userId, chatId)
+    const graphBlock = getGraphPromptBlock(userId, chatId)
+
+    // Get recent messages for context
+    const msgs = db.select({
+      content: schema.messages.content,
+      senderName: schema.users.displayName,
+      senderId: schema.messages.senderId,
+      createdAt: schema.messages.createdAt,
+      visibility: schema.messages.visibility,
+    }).from(schema.messages)
+      .leftJoin(schema.users, eq(schema.messages.senderId, schema.users.id))
+      .where(and(eq(schema.messages.chatId, chatId), eq(schema.messages.visibility, 'normal')))
+      .orderBy(desc(schema.messages.createdAt))
+      .limit(20)
+      .all()
+      .reverse()
+
+    const decrypted = await Promise.all(msgs.map(async m => ({ ...m, content: await decrypt(m.content) })))
+    const chatText = decrypted
+      .filter(m => m.content && !m.content.startsWith('/uploads/'))
+      .map(m => `${m.senderName}: ${m.content}`)
+      .join('\n')
+
+    const relType = await getRelationshipType(userId, chatId)
+
+    const genConfig = getModelConfig('generation')
+    const result = await chatCompletion({
+      model: genConfig.model,
+      messages: [
+        {
+          role: 'system',
+          content: `You are a relationship psychologist analyzing communication patterns. Given a conversation, mood data, and personal facts, provide:
+1. A brief interpretation of what's happening emotionally (1-2 sentences)
+2. 2-4 actionable recommendations for how the user can be a better friend/partner/family member right now
+
+Context:
+- Person: ${personName} (${relType || 'unknown'} relationship)
+- Current mood: ${latestMood?.mood || 'unknown'} (trend: ${moodTrend?.trend || 'unknown'})
+- Known facts about them:
+${memoryText || 'No facts stored yet'}
+${graphBlock || ''}
+${graphContext.interests.length > 0 ? `- Their interests: ${graphContext.interests.join(', ')}` : ''}
+${graphContext.plans.length > 0 ? `- Their plans: ${graphContext.plans.join(', ')}` : ''}
+${graphContext.dates.length > 0 ? `- Important dates: ${graphContext.dates.join(', ')}` : ''}
+
+Return JSON:
+{
+  "situation": "Brief emotional interpretation",
+  "recommendations": [
+    { "text": "What to do", "draftMessage": "Optional draft message to send", "type": "support|activity|gift|contact" }
+  ]
+}
+
+Respond in the same language as the messages. Be warm but practical.`
+        },
+        { role: 'user', content: chatText || 'No recent messages' },
+      ],
+      temperature: 0.6,
+      maxTokens: 512,
+    })
+
+    try {
+      const parsed = JSON.parse(result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim())
+      insightsCache.set(cacheKey, { data: parsed, at: Date.now() })
+      return c.json(parsed)
+    } catch {
+      return c.json({ situation: null, recommendations: [] })
+    }
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Relationship insights failed' }, 500)
+  }
+})
+
+// ============================
+// Contact Desires — interests, wishes, important dates
+// ============================
+aiTools.post('/contact-desires', async (c) => {
+  const userId = c.get('userId')
+  const { chatId } = await c.req.json()
+  if (!chatId) return c.json({ error: 'chatId required' }, 400)
+
+  try {
+    const memories = getActiveMemories(userId, chatId)
+
+    // Only show real desires/interests — NOT work tasks or technical details
+    const desires = memories
+      .filter(m => ['preference', 'plan'].includes(m.category))
+      .filter(m => {
+        // Filter out technical/work noise
+        const lower = m.fact.toLowerCase()
+        const isNoise = /\b(debug|useform|react|memory leak|event listener|api|deploy|баг|код|фикс|коммит|merge|pr|pull request)\b/i.test(lower)
+        return !isNoise
+      })
+      .map(m => ({
+        text: m.fact,
+        category: m.category,
+        confidence: m.confidence,
+      }))
+
+    // Life events — only significant ones
+    const lifeEvents = memories
+      .filter(m => m.category === 'life_event')
+      .filter(m => m.confidence >= 0.7)
+      .slice(0, 3) // max 3 life events
+      .map(m => ({ text: m.fact, category: m.category, confidence: m.confidence }))
+
+    const dates = memories
+      .filter(m => m.category === 'date')
+      .map(m => ({
+        label: m.fact,
+        category: m.category,
+      }))
+
+    // People they mentioned
+    const people = memories
+      .filter(m => m.category === 'person')
+      .map(m => ({ text: m.fact, category: m.category, confidence: m.confidence }))
+
+    return c.json({
+      desires: [...desires, ...lifeEvents, ...people].slice(0, 8), // max 8 items
+      dates,
+    })
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Contact desires failed' }, 500)
+  }
+})
+
+// ============================
+// Contact Summary — combined data for Relationships page
+// ============================
+aiTools.get('/contact-summary/:chatId', async (c) => {
+  const userId = c.get('userId')
+  const chatId = c.req.param('chatId')
+
+  try {
+    const chat = db.select().from(schema.chats).where(eq(schema.chats.id, chatId)).get()
+    if (!chat) return c.json({ error: 'Chat not found' }, 404)
+
+    // Get other person
+    const members = db.select({
+      userId: schema.chatMembers.userId,
+      displayName: schema.users.displayName,
+      username: schema.users.username,
+    }).from(schema.chatMembers)
+      .innerJoin(schema.users, eq(schema.chatMembers.userId, schema.users.id))
+      .where(eq(schema.chatMembers.chatId, chatId))
+      .all()
+    const otherPerson = members.find(m => m.userId !== userId) || members[0]
+
+    // Mood
+    const moodTrend = getMoodTrend(userId, chatId)
+    const latestMood = getLatestMood(userId, chatId)
+
+    // Memories
+    const memories = getActiveMemories(userId, chatId)
+
+    // Goals for this chat
+    const goals = db.select().from(schema.userGoals)
+      .where(and(
+        eq(schema.userGoals.userId, userId),
+        eq(schema.userGoals.chatId, chatId),
+        inArray(schema.userGoals.status, ['active', 'in_progress']),
+      ))
+      .orderBy(desc(schema.userGoals.updatedAt))
+      .all()
+
+    // Agent config
+    const agentConfig = db.select().from(schema.agentConfigs)
+      .where(and(
+        eq(schema.agentConfigs.userId, userId),
+        eq(schema.agentConfigs.chatId, chatId),
+        eq(schema.agentConfigs.enabled, true),
+      ))
+      .get()
+
+    // Relationship type
+    const relType = await getRelationshipType(userId, chatId)
+
+    // Contact intelligence for style info
+    const intel = getContactIntel(userId, chatId)
+
+    // Recent proactive actions
+    const proactiveActions = db.select().from(schema.proactiveActions)
+      .where(and(
+        eq(schema.proactiveActions.userId, userId),
+        eq(schema.proactiveActions.chatId, chatId),
+      ))
+      .orderBy(desc(schema.proactiveActions.createdAt))
+      .limit(5)
+      .all()
+
+    return c.json({
+      contact: {
+        name: otherPerson?.displayName || chat.name,
+        username: otherPerson?.username,
+        userId: otherPerson?.userId || null,
+        chatId,
+        relationshipType: relType,
+        mood: latestMood ? { mood: latestMood.mood, note: latestMood.note, confidence: latestMood.confidence } : null,
+        moodTrend: moodTrend ? { trend: moodTrend.trend, current: moodTrend.current, significantChange: moodTrend.significantChange } : null,
+        memories: memories.map(m => ({ fact: m.fact, category: m.category })),
+        goals,
+        agentConfig: agentConfig ? { agentId: agentConfig.agentId, triggerMode: agentConfig.triggerMode } : null,
+        style: intel?.theirStyle || null,
+        myStylePreference: intel?.myStyleForThem || null,
+        proactiveActions,
+      }
+    })
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Contact summary failed' }, 500)
+  }
+})
+
+// ============================
+// Contacts Overview — all contacts for dashboard grid
+// ============================
+aiTools.get('/contacts-overview', async (c) => {
+  const userId = c.get('userId')
+
+  try {
+    // Get all private chats for user
+    const userChats = db.select({
+      chatId: schema.chatMembers.chatId,
+    }).from(schema.chatMembers)
+      .where(eq(schema.chatMembers.userId, userId))
+      .all()
+
+    const chatIds = userChats.map(uc => uc.chatId)
+    if (chatIds.length === 0) return c.json({ contacts: [] })
+
+    // Get chats that are private
+    const privateChats = db.select().from(schema.chats)
+      .where(and(
+        inArray(schema.chats.id, chatIds),
+        eq(schema.chats.type, 'private'),
+      ))
+      .all()
+
+    const contacts = await Promise.all(privateChats.map(async (chat) => {
+      // Get other person
+      const members = db.select({
+        userId: schema.chatMembers.userId,
+        displayName: schema.users.displayName,
+        relationshipType: schema.chatMembers.relationshipType,
+      }).from(schema.chatMembers)
+        .innerJoin(schema.users, eq(schema.chatMembers.userId, schema.users.id))
+        .where(eq(schema.chatMembers.chatId, chat.id))
+        .all()
+      const otherPerson = members.find(m => m.userId !== userId)
+      if (!otherPerson) return null // skip self-chats and bot chats
+
+      // Mood
+      const latestMood = getLatestMood(userId, chat.id)
+
+      // Active goals count
+      const goalCount = db.select({ count: sql<number>`count(*)` }).from(schema.userGoals)
+        .where(and(
+          eq(schema.userGoals.userId, userId),
+          eq(schema.userGoals.chatId, chat.id),
+          inArray(schema.userGoals.status, ['active', 'in_progress']),
+        ))
+        .get()
+
+      // Agent config
+      const hasAgent = db.select({ id: schema.agentConfigs.id }).from(schema.agentConfigs)
+        .where(and(
+          eq(schema.agentConfigs.userId, userId),
+          eq(schema.agentConfigs.chatId, chat.id),
+          eq(schema.agentConfigs.enabled, true),
+        ))
+        .get()
+
+      // Top desire from memory
+      const topMemory = getActiveMemories(userId, chat.id)
+        .filter(m => ['preference', 'plan'].includes(m.category))
+        .slice(0, 1)
+
+      return {
+        chatId: chat.id,
+        name: otherPerson.displayName,
+        relationshipType: otherPerson.relationshipType || null,
+        mood: latestMood ? { mood: latestMood.mood, note: latestMood.note } : null,
+        activeGoals: goalCount?.count || 0,
+        hasAgent: !!hasAgent,
+        topDesire: topMemory[0]?.fact || null,
+      }
+    }))
+
+    return c.json({ contacts: contacts.filter(Boolean) })
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Contacts overview failed' }, 500)
   }
 })
 

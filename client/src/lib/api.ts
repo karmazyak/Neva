@@ -665,6 +665,57 @@ class ApiClient {
     return this.request<{ mood: string; note: string | null; confidence: number }>('/ai/tools/mood-check', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
   }
 
+  // Relationship Insights — psychologist analysis
+  async getRelationshipInsights(chatId: string) {
+    return this.request<{
+      situation: string | null
+      recommendations: Array<{ text: string; draftMessage?: string; type: 'support' | 'activity' | 'gift' | 'contact' }>
+    }>('/ai/tools/relationship-insights', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
+  }
+
+  // Contact Desires — interests, wishes, dates
+  async getContactDesires(chatId: string) {
+    return this.request<{
+      desires: Array<{ text: string; category: string; confidence: number }>
+      dates: Array<{ label: string; category: string }>
+    }>('/ai/tools/contact-desires', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
+  }
+
+  // Contact Summary — combined data for Relationships page
+  async getContactSummary(chatId: string) {
+    return this.request<{
+      contact: {
+        name: string
+        username?: string
+        chatId: string
+        relationshipType: string | null
+        mood: { mood: string; note: string | null; confidence: number } | null
+        moodTrend: { trend: string; current: string; significantChange: boolean } | null
+        memories: Array<{ fact: string; category: string }>
+        goals: any[]
+        agentConfig: { agentId: string; triggerMode: string } | null
+        style: any
+        myStylePreference: any
+        proactiveActions: any[]
+      }
+    }>(`/ai/tools/contact-summary/${chatId}`, {}, { silent: true })
+  }
+
+  // Contacts Overview — all contacts for dashboard
+  async getContactsOverview() {
+    return this.request<{
+      contacts: Array<{
+        chatId: string
+        name: string
+        relationshipType: string | null
+        mood: { mood: string; note: string | null } | null
+        activeGoals: number
+        hasAgent: boolean
+        topDesire: string | null
+      }>
+    }>('/ai/tools/contacts-overview', {}, { silent: true })
+  }
+
   // Persona Profile — get/extract digital twin profile
   async getPersonaProfile(chatId: string) {
     return this.request<{
@@ -677,6 +728,63 @@ class ApiClient {
       } | null
       cached: boolean
     }>('/ai/tools/persona', { method: 'POST', body: JSON.stringify({ chatId }) }, { silent: true })
+  }
+
+  // ── Network (Needs / Offers / Matching) ───────────────────────────────────
+
+  async getMyNeeds() {
+    return this.request<{ needs: any[] }>('/network/needs', {}, { silent: true })
+  }
+
+  async createNeed(data: { description: string; category: string; urgency?: string; visibility?: string }) {
+    return this.request<{ need: any }>('/network/needs', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  async deleteNeed(needId: string) {
+    return this.request<any>(`/network/needs/${needId}`, { method: 'DELETE' })
+  }
+
+  async getMyOffers() {
+    return this.request<{ offers: any[] }>('/network/offers', {}, { silent: true })
+  }
+
+  async createOffer(data: { description: string; category: string }) {
+    return this.request<{ offer: any }>('/network/offers', { method: 'POST', body: JSON.stringify(data) })
+  }
+
+  async deleteOffer(offerId: string) {
+    return this.request<any>(`/network/offers/${offerId}`, { method: 'DELETE' })
+  }
+
+  async triggerMatch(needId: string) {
+    return this.request<{ matches: any[] }>(`/network/match/${needId}`, { method: 'POST' })
+  }
+
+  async getMyMatches() {
+    return this.request<{ matches: any[] }>('/network/matches', {}, { silent: true })
+  }
+
+  async getTrustScore(userId: string) {
+    return this.request<{ userId: string; trustScore: number; stars: number; socialDistance: number }>(`/network/trust/${userId}`, {}, { silent: true })
+  }
+
+  async getConsentRequests() {
+    return this.request<{ requests: any[] }>('/network/consent', {}, { silent: true })
+  }
+
+  async respondConsent(requestId: string, approved: boolean) {
+    return this.request<any>(`/network/consent/${requestId}`, { method: 'POST', body: JSON.stringify({ approved }) })
+  }
+
+  async getGiftIdeas(contactId: string, chatId: string, occasion?: string) {
+    return this.request<{ ideas: string; factsUsed: number; topics: string[] }>('/network/gift-ideas', {
+      method: 'POST',
+      body: JSON.stringify({ contactId, chatId, occasion }),
+    })
+  }
+
+  async getUserOffers(userId: string) {
+    return this.request<{ offers: any[] }>(`/network/offers?userId=${userId}`, {}, { silent: true })
   }
 }
 

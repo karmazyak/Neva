@@ -145,6 +145,16 @@ export function useWebSocket(token: string | null) {
               window.dispatchEvent(new CustomEvent('proactive_action', { detail: data }))
               break
 
+            case 'consent_request':
+              // Dispatch for ProactiveCard consent flow
+              window.dispatchEvent(new CustomEvent('consent_request', { detail: data }))
+              break
+
+            case 'fraud_alert':
+              // Dispatch for ProactiveCard fraud warning
+              window.dispatchEvent(new CustomEvent('fraud_alert', { detail: data }))
+              break
+
             case 'mention':
               if (Notification.permission === 'granted') {
                 new Notification(`${data.mentionedBy} mentioned you`, { body: data.content })

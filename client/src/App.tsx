@@ -10,6 +10,7 @@ import RobotStore from './pages/RobotStore'
 import AIChat from './pages/AIChat'
 import Profile from './pages/Profile'
 import SavedMessages from './pages/SavedMessages'
+import Relationships from './pages/Relationships'
 import ToastContainer from './components/ui/Toast'
 import Onboarding from './components/Onboarding'
 import TabBar from './components/TabBar'
@@ -113,6 +114,7 @@ function App() {
         <Route path="/ai-chat" element={<AIChat />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/saved" element={<SavedMessages />} />
+        <Route path="/relationships" element={<Relationships />} />
         {/* Redirects for old routes */}
         <Route path="/agents" element={<Navigate to="/robots" />} />
         <Route path="/marketplace" element={<Navigate to="/store" />} />

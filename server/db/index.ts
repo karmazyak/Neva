@@ -102,3 +102,135 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_ai_audit_user ON ai_audit_log(user_id);
   CREATE INDEX IF NOT EXISTS idx_ai_audit_created ON ai_audit_log(created_at);
 `)
+
+// ── Contact Intelligence & Memory tables ─────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS contact_intelligence (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    contact_id TEXT NOT NULL REFERENCES users(id),
+    chat_id TEXT NOT NULL REFERENCES chats(id),
+    persona TEXT,
+    their_style TEXT,
+    my_style_for_them TEXT,
+    mood_history TEXT DEFAULT '[]',
+    relationship_type TEXT,
+    last_analyzed_at INTEGER,
+    message_count_at_analysis INTEGER DEFAULT 0,
+    version INTEGER DEFAULT 1,
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_intel_unique ON contact_intelligence(user_id, chat_id);
+  CREATE INDEX IF NOT EXISTS idx_contact_intel_contact ON contact_intelligence(contact_id);
+`)
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS contact_memory (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    contact_id TEXT NOT NULL REFERENCES users(id),
+    chat_id TEXT NOT NULL REFERENCES chats(id),
+    fact TEXT NOT NULL,
+    category TEXT NOT NULL,
+    source TEXT,
+    confidence REAL DEFAULT 0.8,
+    extracted_at INTEGER DEFAULT (unixepoch()),
+    expires_at INTEGER,
+    is_active INTEGER DEFAULT 1
+  );
+  CREATE INDEX IF NOT EXISTS idx_contact_memory_user_chat ON contact_memory(user_id, chat_id, is_active);
+`)
+
+// Add priority column to proactive_actions (Phase 6 prep)
+try { sqlite.exec('ALTER TABLE proactive_actions ADD COLUMN priority TEXT DEFAULT \'medium\'') } catch {}
+
+// ── Personal Agent Network tables ───────────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS needs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    chat_id TEXT,
+    description TEXT NOT NULL,
+    embedding TEXT,
+    category TEXT NOT NULL,
+    urgency TEXT NOT NULL DEFAULT 'whenever',
+    source TEXT NOT NULL DEFAULT 'explicit',
+    visibility TEXT NOT NULL DEFAULT 'friends',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER DEFAULT (unixepoch()),
+    expires_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_needs_user_status ON needs(user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_needs_category_status ON needs(category, status);
+
+  CREATE TABLE IF NOT EXISTS offers (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    description TEXT NOT NULL,
+    embedding TEXT,
+    category TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'explicit',
+    availability TEXT NOT NULL DEFAULT 'available',
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_offers_user ON offers(user_id);
+  CREATE INDEX IF NOT EXISTS idx_offers_category ON offers(category, availability);
+
+  CREATE TABLE IF NOT EXISTS matches (
+    id TEXT PRIMARY KEY,
+    need_id TEXT NOT NULL REFERENCES needs(id),
+    offer_id TEXT NOT NULL REFERENCES offers(id),
+    requester_id TEXT NOT NULL REFERENCES users(id),
+    provider_id TEXT NOT NULL REFERENCES users(id),
+    similarity_score REAL,
+    social_distance INTEGER,
+    mutual_contact_id TEXT,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    requester_rating INTEGER,
+    provider_rating INTEGER,
+    created_at INTEGER DEFAULT (unixepoch()),
+    completed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_matches_requester ON matches(requester_id, status);
+  CREATE INDEX IF NOT EXISTS idx_matches_provider ON matches(provider_id, status);
+
+  CREATE TABLE IF NOT EXISTS consent_requests (
+    id TEXT PRIMARY KEY,
+    from_user_id TEXT NOT NULL REFERENCES users(id),
+    to_user_id TEXT NOT NULL REFERENCES users(id),
+    type TEXT NOT NULL,
+    context TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    response_message TEXT,
+    created_at INTEGER DEFAULT (unixepoch()),
+    expires_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_consent_to_status ON consent_requests(to_user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_consent_from ON consent_requests(from_user_id);
+`)
+
+// ── A2A Protocol tables ─────────────────────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS a2a_tasks (
+    id TEXT PRIMARY KEY,
+    context_id TEXT,
+    state TEXT NOT NULL DEFAULT 'pending',
+    data TEXT NOT NULL,
+    caller_app_id TEXT,
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_a2a_tasks_context ON a2a_tasks(context_id);
+  CREATE INDEX IF NOT EXISTS idx_a2a_tasks_state ON a2a_tasks(state);
+
+  CREATE TABLE IF NOT EXISTS a2a_apps (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    api_key_hash TEXT NOT NULL,
+    permissions TEXT DEFAULT '[]',
+    active INTEGER DEFAULT 1,
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+`)

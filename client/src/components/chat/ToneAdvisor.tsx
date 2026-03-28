@@ -18,6 +18,7 @@ export default function ToneAdvisor({ chatId, text, onApplySuggestion }: ToneAdv
   const lastCheckedRef = useRef('')
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
   const dismissCountRef = useRef(0)
+  const appliedSuggestionRef = useRef('') // skip re-checking our own suggestion
 
   useEffect(() => {
     setWarning(null)
@@ -29,6 +30,12 @@ export default function ToneAdvisor({ chatId, text, onApplySuggestion }: ToneAdv
     // Only check if text is long enough and changed significantly
     if (text.length < 25 || dismissed || dismissCountRef.current >= 3) {
       setWarning(null)
+      return
+    }
+
+    // Don't re-check text that we just suggested (prevents loop)
+    if (appliedSuggestionRef.current && text === appliedSuggestionRef.current) {
+      appliedSuggestionRef.current = ''
       return
     }
 
@@ -82,6 +89,8 @@ export default function ToneAdvisor({ chatId, text, onApplySuggestion }: ToneAdv
       {suggestion && (
         <button
           onClick={() => {
+            appliedSuggestionRef.current = suggestion
+            lastCheckedRef.current = suggestion
             onApplySuggestion(suggestion)
             setWarning(null)
             trackAIAction('toneSoftened')

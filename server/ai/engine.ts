@@ -330,14 +330,32 @@ export async function processAgentResponse(
 
     if (!ownerUser) continue
 
-    // Load owner's writing style for natural responses
+    // Phase 3: Prefer per-contact style, fallback to global
     let styleBlock = ''
     try {
-      const { getOwnProfile } = await import('./style/cache')
-      const cachedStyle = getOwnProfile(config.userId)
-      if (cachedStyle) {
-        const p = cachedStyle.profile
-        styleBlock = `\n\nСТИЛЬ ВЛАДЕЛЬЦА (пиши именно так):\n${p.styleInstruction}\nХарактерные фразы: ${(p.commonPhrases || []).join(', ')}\nДлина сообщений: ~${p.avgMessageLength} символов\nЭмодзи: ${p.emojiFrequency}\nРегистр: ${p.capitalization}`
+      const { getContactIntel } = await import('./contact-intelligence')
+      const intel = getContactIntel(config.userId, chatId)
+      if (intel?.myStyleForThem) {
+        const p = intel.myStyleForThem as any
+        styleBlock = `\n\nСТИЛЬ ВЛАДЕЛЬЦА ДЛЯ ЭТОГО КОНТАКТА (пиши именно так):\n${p.styleInstruction || ''}\nХарактерные фразы: ${(p.commonPhrases || []).join(', ')}\nДлина сообщений: ~${p.avgMessageLength || 50} символов\nЭмодзи: ${p.emojiFrequency || 'иногда'}\nРегистр: ${p.capitalization || 'стандарт'}`
+      }
+      if (!styleBlock) {
+        const { getOwnProfile } = await import('./style/cache')
+        const cachedStyle = getOwnProfile(config.userId)
+        if (cachedStyle) {
+          const p = cachedStyle.profile
+          styleBlock = `\n\nСТИЛЬ ВЛАДЕЛЬЦА (пиши именно так):\n${p.styleInstruction}\nХарактерные фразы: ${(p.commonPhrases || []).join(', ')}\nДлина сообщений: ~${p.avgMessageLength} символов\nЭмодзи: ${p.emojiFrequency}\nРегистр: ${p.capitalization}`
+        }
+      }
+    } catch {}
+
+    // Phase 5: Inject active goal into auto-reply
+    let goalBlock = ''
+    try {
+      const { getActiveGoal } = await import('./goals')
+      const goal = getActiveGoal(config.userId, chatId)
+      if (goal) {
+        goalBlock = `\n\nАКТИВНАЯ ЦЕЛЬ: "${goal.goal}". Стратегия: "${goal.strategy}". Отвечай так, чтобы продвигать эту цель.`
       }
     } catch {}
 
@@ -346,7 +364,7 @@ export async function processAgentResponse(
     // skill-specific system prompt (which may contain instructions like "generate 3 variants")
     const autoSystemPrompt = `You are a helpful chat assistant that responds naturally in conversations. Write a single, natural reply to the last message. Keep it concise (1-3 sentences). Match the conversation language and tone.`
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildSystemPrompt(autoSystemPrompt, ownerUser.displayName) + styleBlock },
+      { role: 'system', content: buildSystemPrompt(autoSystemPrompt, ownerUser.displayName) + styleBlock + goalBlock },
       ...history.map((msg) => ({
         role: (msg.senderId === config.userId ? 'assistant' : 'user') as 'user' | 'assistant',
         content: msg.senderId === config.userId ? msg.content : `${msg.senderName}: ${msg.content}`,

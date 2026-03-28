@@ -9,6 +9,7 @@ import {
   LogOut,
   X,
   Bookmark,
+  Heart,
 } from 'lucide-react'
 
 interface SidebarProps {
@@ -24,6 +25,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 
   const menuItems = [
     { icon: MessageCircle, label: 'Chats', path: '/' },
+    { icon: Heart, label: 'Relationships', path: '/relationships' },
     { icon: Sparkles, label: 'AI Chat', path: '/ai-chat' },
     { icon: Bot, label: 'My Robots', path: '/robots' },
     { icon: Store, label: 'Robot Store', path: '/store' },

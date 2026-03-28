@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Send, Loader2, MessageSquare, Target, ListChecks, Smile, RefreshCw, Sparkles, User, TrendingUp, TrendingDown, Minus, Clock, Brain, Theater, GitBranch, Eye, ShieldCheck, Lightbulb, AlertTriangle, PartyPopper, Bookmark, Rocket, Heart } from 'lucide-react'
+import { X, Send, Loader2, MessageSquare, Target, ListChecks, Smile, RefreshCw, Sparkles, User, TrendingUp, TrendingDown, Minus, Clock, Brain, Theater, GitBranch, Eye, ShieldCheck, Lightbulb, AlertTriangle, PartyPopper, Bookmark, Rocket, Heart, Bot, Play, Pause, Plus, Trash2, Gift, Calendar, Flame, CheckCircle } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api'
 import { useChatStore } from '../../stores/chatStore'
 import { trackAIAction } from '../AIValueTracker'
@@ -37,9 +38,20 @@ interface PersonProfile {
   personalMemory?: Array<{ text: string; when: string; category: string }>
 }
 
-type Tab = 'chat' | 'person'
+interface RelationshipInsights {
+  situation: string | null
+  recommendations: Array<{ text: string; draftMessage?: string; type: string }>
+}
+
+interface ContactDesires {
+  desires: Array<{ text: string; category: string; confidence: number }>
+  dates: Array<{ label: string; category: string }>
+}
+
+type Tab = 'chat' | 'person' | 'strategy'
 
 export default function ContextPanel({ chatId, onClose, onInsertDraft }: ContextPanelProps) {
+  const navigate = useNavigate()
   const { chats, messages } = useChatStore()
   const [activeTab, setActiveTab] = useState<Tab>('chat')
 
@@ -69,6 +81,20 @@ export default function ContextPanel({ chatId, onClose, onInsertDraft }: Context
   // Person tab state
   const [person, setPerson] = useState<PersonProfile | null>(null)
   const [personLoading, setPersonLoading] = useState(false)
+
+  // Person tab — psychologist & desires
+  const [insights, setInsights] = useState<RelationshipInsights | null>(null)
+  const [insightsLoading, setInsightsLoading] = useState(false)
+  const [desires, setDesires] = useState<ContactDesires | null>(null)
+  const [desiresLoading, setDesiresLoading] = useState(false)
+
+  // Strategy tab state
+  const [goals, setGoals] = useState<any[]>([])
+  const [goalsLoading, setGoalsLoading] = useState(false)
+  const [agentConfig, setAgentConfig] = useState<{ agentId: string; triggerMode: string } | null>(null)
+  const [proactiveActions, setProactiveActions] = useState<any[]>([])
+  const [newGoalText, setNewGoalText] = useState('')
+  const [showNewGoal, setShowNewGoal] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -122,10 +148,59 @@ export default function ContextPanel({ chatId, onClose, onInsertDraft }: Context
     }
   }
 
+  const loadInsights = async (force = false) => {
+    if (insights && !force) return // use cached
+    setInsightsLoading(true)
+    try {
+      const res = await api.getRelationshipInsights(chatId)
+      setInsights(res)
+    } catch {} finally { setInsightsLoading(false) }
+  }
+
+  const loadDesires = async (force = false) => {
+    if (desires && !force) return // use cached
+    setDesiresLoading(true)
+    try {
+      const res = await api.getContactDesires(chatId)
+      setDesires(res)
+    } catch {} finally { setDesiresLoading(false) }
+  }
+
+  const loadStrategy = async () => {
+    setGoalsLoading(true)
+    try {
+      const [goalsRes, configRes, actionsRes] = await Promise.all([
+        api.getGoalsForChat(chatId),
+        api.getAgentConfig(chatId).catch(() => null),
+        api.getProactiveActions().catch(() => ({ actions: [] })),
+      ])
+      setGoals(goalsRes.goals || [])
+      setAgentConfig((configRes as any)?.triggerMode ? { agentId: (configRes as any).agentId, triggerMode: (configRes as any).triggerMode } : null)
+      setProactiveActions((actionsRes.actions || []).filter((a: any) => a.chatId === chatId).slice(0, 5))
+    } catch {} finally { setGoalsLoading(false) }
+  }
+
+  const handleCreateGoal = async () => {
+    if (!newGoalText.trim()) return
+    try {
+      await api.createGoal({ goal: newGoalText.trim(), chatId, mode: 'strategic' })
+      setNewGoalText('')
+      setShowNewGoal(false)
+      loadStrategy()
+    } catch {}
+  }
+
   const handleTabChange = (tab: Tab) => {
     setActiveTab(tab)
     if (tab === 'person' && !person) {
       loadPerson()
+    }
+    if (tab === 'person' && !insights) {
+      loadInsights()
+      loadDesires()
+    }
+    if (tab === 'strategy') {
+      loadStrategy()
     }
   }
 
@@ -254,11 +329,22 @@ export default function ContextPanel({ chatId, onClose, onInsertDraft }: Context
           <User size={14} />
           Person
         </button>
+        <button
+          onClick={() => handleTabChange('strategy')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
+            activeTab === 'strategy'
+              ? 'text-accent border-b-2 border-accent'
+              : 'text-text-secondary hover:text-text-primary'
+          }`}
+        >
+          <Target size={14} />
+          Strategy
+        </button>
       </div>
 
       {/* Content */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-        {activeTab === 'chat' ? (
+        {activeTab === 'chat' && (
           <>
             {/* Chat info header */}
             <div className="text-xs text-text-secondary">
@@ -620,7 +706,8 @@ export default function ContextPanel({ chatId, onClose, onInsertDraft }: Context
               </div>
             )}
           </>
-        ) : (
+        )}
+        {activeTab === 'person' && (
           /* Person Tab */
           <>
             {personLoading ? (
@@ -753,6 +840,109 @@ export default function ContextPanel({ chatId, onClose, onInsertDraft }: Context
                   </div>
                 </div>
 
+                {/* Psychologist Block */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary uppercase tracking-wider">
+                    <Brain size={12} />
+                    Психолог
+                  </div>
+                  {insightsLoading ? (
+                    <div className="flex items-center gap-2 text-xs text-text-secondary py-2">
+                      <Loader2 size={12} className="animate-spin" /> Анализирую...
+                    </div>
+                  ) : insights?.situation ? (
+                    <div className="space-y-2">
+                      <div className="text-sm text-text-primary bg-purple-500/10 border border-purple-500/20 rounded-lg px-3 py-2">
+                        <Lightbulb size={12} className="inline mr-1 text-purple-400" />
+                        {insights.situation}
+                      </div>
+                      {insights.recommendations.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-[11px] text-text-secondary font-medium">Что можно сделать:</div>
+                          {insights.recommendations.map((rec, i) => (
+                            <div key={i} className="flex items-start gap-2 text-sm bg-bg-hover rounded-lg px-3 py-2">
+                              <span className="mt-0.5 flex-shrink-0">
+                                {rec.type === 'support' ? '💛' : rec.type === 'activity' ? '🎯' : rec.type === 'gift' ? '🎁' : '📱'}
+                              </span>
+                              <div className="flex-1 min-w-0">
+                                <span className="text-text-primary">{rec.text}</span>
+                                {rec.draftMessage && onInsertDraft && (
+                                  <button
+                                    onClick={() => onInsertDraft(rec.draftMessage!)}
+                                    className="ml-2 text-[10px] text-accent bg-accent/10 hover:bg-accent/20 px-2 py-0.5 rounded-full transition-colors"
+                                  >
+                                    Вставить
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : !insightsLoading && (
+                    <button onClick={loadInsights} className="text-xs text-accent hover:underline">
+                      Получить рекомендации
+                    </button>
+                  )}
+                </div>
+
+                {/* Desires & Interests Map */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary uppercase tracking-wider">
+                    <Flame size={12} />
+                    Интересы и желания
+                  </div>
+                  {desiresLoading ? (
+                    <div className="flex items-center gap-2 text-xs text-text-secondary py-2">
+                      <Loader2 size={12} className="animate-spin" /> Загружаю...
+                    </div>
+                  ) : desires ? (
+                    <div className="space-y-2">
+                      {desires.desires.length > 0 && (
+                        <div className="space-y-1">
+                          {desires.desires.map((d, i) => {
+                            const icon = d.category === 'preference' ? '❤️' : d.category === 'plan' ? '🗓' : d.category === 'life_event' ? '💫' : '💼'
+                            return (
+                              <div key={i} className="text-sm text-text-primary bg-bg-hover rounded-lg px-3 py-2">
+                                {icon} {d.text}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                      {desires.dates.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-[11px] text-text-secondary font-medium flex items-center gap-1">
+                            <Calendar size={10} /> Важные даты
+                          </div>
+                          {desires.dates.map((d, i) => (
+                            <div key={i} className="text-sm text-text-primary bg-pink-500/10 border border-pink-500/20 rounded-lg px-3 py-2">
+                              🎂 {d.label}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {desires.desires.length === 0 && desires.dates.length === 0 && (
+                        <div className="text-xs text-text-secondary">Пока нет данных. Общайтесь больше — AI запомнит интересы.</div>
+                      )}
+                    </div>
+                  ) : !desiresLoading && (
+                    <button onClick={loadDesires} className="text-xs text-accent hover:underline">
+                      Загрузить интересы
+                    </button>
+                  )}
+                </div>
+
+                {/* Quick link to Relationships page */}
+                <button
+                  onClick={() => navigate('/relationships')}
+                  className="w-full flex items-center justify-center gap-2 text-xs text-accent bg-accent/10 hover:bg-accent/15 py-2.5 rounded-lg transition-colors"
+                >
+                  <Heart size={12} />
+                  Подробнее на странице отношений
+                </button>
+
                 {/* Stats */}
                 <div className="text-xs text-text-secondary space-y-1">
                   <div>Based on {person.totalMessages} human messages analyzed</div>
@@ -788,6 +978,182 @@ export default function ContextPanel({ chatId, onClose, onInsertDraft }: Context
                   Analyze relationship
                 </button>
               </div>
+            )}
+          </>
+        )}
+        {activeTab === 'strategy' && (
+          /* Strategy Tab */
+          <>
+            {goalsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 size={20} className="text-accent animate-spin" />
+                <span className="ml-2 text-sm text-text-secondary">Загружаю стратегию...</span>
+              </div>
+            ) : (
+              <>
+                {/* Active Goals */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary uppercase tracking-wider">
+                      <Target size={12} />
+                      Активные цели
+                    </div>
+                    <button
+                      onClick={() => setShowNewGoal(!showNewGoal)}
+                      className="text-accent hover:text-accent-hover transition-colors"
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+
+                  {showNewGoal && (
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newGoalText}
+                        onChange={e => setNewGoalText(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleCreateGoal()}
+                        placeholder="Новая цель..."
+                        className="flex-1 text-sm bg-bg-input rounded-lg px-3 py-2 text-text-primary placeholder:text-text-secondary focus:outline-none"
+                      />
+                      <button onClick={handleCreateGoal} className="p-2 bg-accent text-white rounded-lg hover:bg-accent-hover transition-colors">
+                        <CheckCircle size={14} />
+                      </button>
+                    </div>
+                  )}
+
+                  {goals.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {goals.map((goal: any) => (
+                        <div key={goal.id} className="bg-bg-hover rounded-lg px-3 py-2 space-y-1.5">
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="text-sm text-text-primary flex-1">{goal.goal}</span>
+                            <button
+                              onClick={async () => { await api.deleteGoal(goal.id); loadStrategy() }}
+                              className="text-text-secondary hover:text-danger transition-colors flex-shrink-0"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                          {/* Progress bar */}
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 bg-bg-input rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-accent rounded-full transition-all"
+                                style={{ width: `${goal.progress || 0}%` }}
+                              />
+                            </div>
+                            <span className="text-[10px] text-text-secondary">{goal.progress || 0}%</span>
+                          </div>
+                          {goal.strategy && (
+                            <div className="text-[11px] text-text-secondary">Стратегия: {goal.strategy}</div>
+                          )}
+                          <div className="flex gap-1.5">
+                            {goal.status === 'active' && (
+                              <button
+                                onClick={async () => { await api.updateGoal(goal.id, { status: 'in_progress' }); loadStrategy() }}
+                                className="text-[10px] bg-accent/10 text-accent px-2 py-0.5 rounded-full hover:bg-accent/20 transition-colors flex items-center gap-1"
+                              >
+                                <Play size={8} /> Запустить
+                              </button>
+                            )}
+                            {goal.status === 'in_progress' && (
+                              <button
+                                onClick={async () => { await api.updateGoal(goal.id, { status: 'paused' }); loadStrategy() }}
+                                className="text-[10px] bg-amber-500/10 text-amber-400 px-2 py-0.5 rounded-full hover:bg-amber-500/20 transition-colors flex items-center gap-1"
+                              >
+                                <Pause size={8} /> Пауза
+                              </button>
+                            )}
+                            <button
+                              onClick={async () => { await api.updateGoal(goal.id, { status: 'completed' }); loadStrategy() }}
+                              className="text-[10px] bg-green-500/10 text-green-400 px-2 py-0.5 rounded-full hover:bg-green-500/20 transition-colors flex items-center gap-1"
+                            >
+                              <CheckCircle size={8} /> Готово
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-text-secondary py-2">Нет активных целей для этого чата</div>
+                  )}
+                </div>
+
+                {/* Autopilot Toggle */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary uppercase tracking-wider">
+                    <Bot size={12} />
+                    Автопилот
+                  </div>
+                  <div className="flex items-center gap-3 bg-bg-hover rounded-lg px-3 py-2.5">
+                    <div className="flex-1">
+                      <div className="text-sm text-text-primary">
+                        {agentConfig ? 'Включен' : 'Выключен'}
+                      </div>
+                      {agentConfig && (
+                        <div className="text-[11px] text-text-secondary">
+                          Режим: {agentConfig.triggerMode === 'auto' ? 'Авто-ответ' : agentConfig.triggerMode === 'mention' ? 'По упоминанию' : 'По команде'}
+                        </div>
+                      )}
+                    </div>
+                    <div className={`w-8 h-4.5 rounded-full transition-colors cursor-pointer flex items-center ${
+                      agentConfig ? 'bg-accent justify-end' : 'bg-bg-input justify-start'
+                    }`}>
+                      <div className="w-3.5 h-3.5 bg-white rounded-full mx-0.5 shadow-sm" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Recent Proactive Actions */}
+                {proactiveActions.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary uppercase tracking-wider">
+                      <Sparkles size={12} />
+                      Последние подсказки
+                    </div>
+                    <div className="space-y-1">
+                      {proactiveActions.map((action: any) => {
+                        const triggerIcon = action.trigger === 'silence' ? '💛' : action.trigger === 'mood_change' ? '💜' : action.trigger === 'goal_progress' ? '🎯' : '💬'
+                        return (
+                          <div key={action.id} className="text-xs bg-bg-hover rounded-lg px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <span>{triggerIcon}</span>
+                              <span className="text-text-primary font-medium">{action.title}</span>
+                              <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full ${
+                                action.status === 'acted' ? 'bg-green-500/15 text-green-400' :
+                                action.status === 'dismissed' ? 'bg-bg-input text-text-secondary' :
+                                'bg-accent/15 text-accent'
+                              }`}>
+                                {action.status === 'acted' ? 'Выполнено' : action.status === 'dismissed' ? 'Пропущено' : 'Ожидает'}
+                              </span>
+                            </div>
+                            {action.body && <div className="text-text-secondary mt-0.5">{action.body}</div>}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Launch Mission button */}
+                <button
+                  onClick={() => navigate('/ai-chat')}
+                  className="w-full flex items-center justify-center gap-2 text-xs text-purple-400 bg-purple-500/10 hover:bg-purple-500/15 py-2.5 rounded-lg transition-colors border border-purple-500/20"
+                >
+                  <Rocket size={12} />
+                  Запустить миссию
+                </button>
+
+                {/* Link to Relationships page */}
+                <button
+                  onClick={() => navigate('/relationships')}
+                  className="w-full flex items-center justify-center gap-2 text-xs text-accent bg-accent/10 hover:bg-accent/15 py-2.5 rounded-lg transition-colors"
+                >
+                  <Heart size={12} />
+                  Управление на странице отношений
+                </button>
+              </>
             )}
           </>
         )}

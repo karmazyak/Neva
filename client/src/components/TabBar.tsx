@@ -1,12 +1,12 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { MessageCircle, Sparkles, Bot, User } from 'lucide-react'
+import { MessageCircle, Sparkles, Bot, User, Heart } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { PulseBeacon } from './GuidedTour'
 
 const tabs = [
   { icon: MessageCircle, label: 'Chats', path: '/' },
+  { icon: Heart, label: 'Relations', path: '/relationships' },
   { icon: Sparkles, label: 'AI', path: '/ai-chat' },
-  { icon: Bot, label: 'Robots', path: '/robots' },
   { icon: User, label: 'Profile', path: '/profile' },
 ]
 

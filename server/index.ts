@@ -17,6 +17,8 @@ import pushRoutes from './routes/push'
 import savedRoutes from './routes/saved'
 import folderRoutes from './routes/folders'
 import goalRoutes from './routes/goals'
+import networkRoutes from './routes/network'
+import { a2aRoutes } from './a2a'
 import { startScheduler } from './scheduler'
 import { existsSync } from 'fs'
 import { join } from 'path'
@@ -88,6 +90,8 @@ app.route('/api/push', pushRoutes)
 app.route('/api/saved', savedRoutes)
 app.route('/api/folders', folderRoutes)
 app.route('/api/goals', goalRoutes)
+app.route('/api/network', networkRoutes)
+app.route('/a2a', a2aRoutes)
 
 // Get available AI models (requires auth)
 app.get('/api/models', authMiddleware, async (c) => {
@@ -127,13 +131,13 @@ const server = Bun.serve({
 
     // Serve static client build
     const staticPath = join('./client/dist', url.pathname === '/' ? 'index.html' : url.pathname)
-    if (existsSync(staticPath) && !url.pathname.startsWith('/api')) {
+    if (existsSync(staticPath) && !url.pathname.startsWith('/api') && !url.pathname.startsWith('/a2a')) {
       return new Response(Bun.file(staticPath))
     }
 
     // SPA fallback — serve index.html for all non-API routes
     const apiResult = await app.fetch(req)
-    if (apiResult.status === 404 && !url.pathname.startsWith('/api')) {
+    if (apiResult.status === 404 && !url.pathname.startsWith('/api') && !url.pathname.startsWith('/a2a')) {
       const indexPath = './client/dist/index.html'
       if (existsSync(indexPath)) {
         return new Response(Bun.file(indexPath))

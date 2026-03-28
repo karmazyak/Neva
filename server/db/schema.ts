@@ -337,5 +337,165 @@ export const proactiveActions = sqliteTable('proactive_actions', {
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
 })
 
+// ── Contact Intelligence (Unified persona + style + mood) ──
+
+export const contactIntelligence = sqliteTable('contact_intelligence', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  contactId: text('contact_id').notNull().references(() => users.id),
+  chatId: text('chat_id').notNull().references(() => chats.id),
+  persona: text('persona', { mode: 'json' }).$type<Record<string, any>>(),
+  theirStyle: text('their_style', { mode: 'json' }).$type<Record<string, any>>(),
+  myStyleForThem: text('my_style_for_them', { mode: 'json' }).$type<Record<string, any>>(),
+  moodHistory: text('mood_history', { mode: 'json' }).$type<Array<{ mood: string; note: string | null; confidence: number; timestamp: number }>>().default([]),
+  communicationBaseline: text('communication_baseline', { mode: 'json' }).$type<{
+    avgMessageLength: number
+    avgEmojiPerMessage: number
+    avgResponseTimeMs: number
+    capsFrequency: number
+    avgMessagesPerDay: number
+    ellipsisFrequency: number
+    positiveEmojiRate: number
+    negativeKeywordRate: number
+    sampleSize: number
+    stdMessageLength: number
+    lastUpdatedAt: number
+  } | null>(),
+  relationshipType: text('relationship_type', { enum: ['family', 'friend', 'work', 'client', 'acquaintance', 'other'] }),
+  lastAnalyzedAt: integer('last_analyzed_at', { mode: 'timestamp' }),
+  messageCountAtAnalysis: integer('message_count_at_analysis').default(0),
+  version: integer('version').default(1),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+// ── Contact Memory (Persistent long-term facts) ──
+
+export const contactMemory = sqliteTable('contact_memory', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  contactId: text('contact_id').notNull().references(() => users.id),
+  chatId: text('chat_id').notNull().references(() => chats.id),
+  fact: text('fact').notNull(),
+  category: text('category', { enum: ['life_event', 'plan', 'person', 'date', 'health', 'preference', 'work'] }).notNull(),
+  source: text('source'),
+  confidence: real('confidence').default(0.8),
+  extractedAt: integer('extracted_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
+})
+
+// ── Contact Knowledge Graph (Entity-Relation memory) ──
+
+export const contactKnowledgeGraph = sqliteTable('contact_knowledge_graph', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  contactId: text('contact_id').notNull().references(() => users.id),
+  chatId: text('chat_id').notNull().references(() => chats.id),
+  entities: text('entities', { mode: 'json' }).$type<Array<{
+    id: string
+    name: string
+    type: 'person' | 'place' | 'thing' | 'event' | 'interest' | 'date' | 'work'
+    attributes: Record<string, string>
+  }>>().default([]),
+  relations: text('relations', { mode: 'json' }).$type<Array<{
+    from: string
+    to: string
+    type: string
+    confidence: number
+    firstMentioned: number
+    lastMentioned: number
+  }>>().default([]),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+// ── Personal Agent Network: Needs/Offers/Matching ───────────────────────────
+
+export const needs = sqliteTable('needs', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  chatId: text('chat_id'),
+  description: text('description').notNull(),
+  embedding: text('embedding', { mode: 'json' }).$type<number[]>(),
+  category: text('category', { enum: ['professional', 'social', 'care'] }).notNull(),
+  urgency: text('urgency', { enum: ['now', 'this_week', 'whenever'] }).notNull().default('whenever'),
+  source: text('source', { enum: ['explicit', 'detected'] }).notNull().default('explicit'),
+  visibility: text('visibility', { enum: ['friends', 'friends_of_friends', 'network'] }).notNull().default('friends'),
+  status: text('status', { enum: ['active', 'matched', 'expired', 'cancelled'] }).notNull().default('active'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
+})
+
+export const offers = sqliteTable('offers', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  description: text('description').notNull(),
+  embedding: text('embedding', { mode: 'json' }).$type<number[]>(),
+  category: text('category', { enum: ['professional', 'social', 'hobby'] }).notNull(),
+  source: text('source', { enum: ['explicit', 'detected'] }).notNull().default('explicit'),
+  availability: text('availability', { enum: ['available', 'busy'] }).notNull().default('available'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+export const matches = sqliteTable('matches', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  needId: text('need_id').notNull().references(() => needs.id),
+  offerId: text('offer_id').notNull().references(() => offers.id),
+  requesterId: text('requester_id').notNull().references(() => users.id),
+  providerId: text('provider_id').notNull().references(() => users.id),
+  similarityScore: real('similarity_score'),
+  socialDistance: integer('social_distance'),
+  mutualContactId: text('mutual_contact_id'),
+  status: text('status', { enum: ['proposed', 'accepted', 'declined', 'completed'] }).notNull().default('proposed'),
+  requesterRating: integer('requester_rating'),
+  providerRating: integer('provider_rating'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  completedAt: integer('completed_at', { mode: 'timestamp' }),
+})
+
+export const consentRequests = sqliteTable('consent_requests', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  fromUserId: text('from_user_id').notNull().references(() => users.id),
+  toUserId: text('to_user_id').notNull().references(() => users.id),
+  type: text('type', { enum: ['availability', 'match_offer', 'info'] }).notNull(),
+  context: text('context').notNull(),
+  status: text('status', { enum: ['pending', 'approved', 'denied', 'expired'] }).notNull().default('pending'),
+  responseMessage: text('response_message'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
+})
+
+// ── A2A Protocol: Tasks & External Apps ─────────────────────────────────────
+
+export const a2aTasks = sqliteTable('a2a_tasks', {
+  id: text('id').primaryKey(),
+  contextId: text('context_id'),
+  state: text('state', { enum: ['pending', 'working', 'input-required', 'completed', 'failed', 'canceled'] }).notNull().default('pending'),
+  data: text('data', { mode: 'json' }).$type<Record<string, any>>().notNull(),
+  callerAppId: text('caller_app_id'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+export const a2aApps = sqliteTable('a2a_apps', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  name: text('name').notNull(),
+  apiKeyHash: text('api_key_hash').notNull(),
+  permissions: text('permissions', { mode: 'json' }).$type<string[]>().default([]),
+  active: integer('active', { mode: 'boolean' }).default(true),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+// ── Type exports ────────────────────────────────────────────────────────────
+
 export type UserGoal = typeof userGoals.$inferSelect
 export type ProactiveAction = typeof proactiveActions.$inferSelect
+export type ContactIntelligenceRow = typeof contactIntelligence.$inferSelect
+export type ContactMemoryRow = typeof contactMemory.$inferSelect
+export type Need = typeof needs.$inferSelect
+export type Offer = typeof offers.$inferSelect
+export type Match = typeof matches.$inferSelect
+export type ConsentRequest = typeof consentRequests.$inferSelect
+export type A2ATask = typeof a2aTasks.$inferSelect
+export type A2AApp = typeof a2aApps.$inferSelect

@@ -12,6 +12,9 @@ import { sendToUser } from '../ws'
 import { decrypt } from '../security/encryption'
 import { chatCompletion } from './openrouter'
 import { getModelConfig } from './model-router'
+import { getMoodTrend, getContactIntel, getBaseline, calculateBaseline, updateBaseline } from './contact-intelligence'
+import { getActiveMemories } from './memory-manager'
+import { quickMoodSignal } from './mood-detector'
 
 // Track last scan time per user (in-memory, resets on restart — OK for MVP)
 const lastScanAt = new Map<string, number>()
@@ -23,7 +26,7 @@ interface ProactiveTrigger {
   userId: string
   chatId: string
   chatName: string
-  type: 'silence' | 'unanswered' | 'goal_stall' | 'burst' | 'mood'
+  type: 'silence' | 'unanswered' | 'goal_stall' | 'burst' | 'mood' | 'behavior_change' | 'upcoming_date' | 'detected_need' | 'fraud_suspicion'
   context: string // brief description for LLM
 }
 
@@ -92,6 +95,35 @@ export async function runProactiveScan() {
 }
 
 /**
+ * Run proactive scan for a single user (Phase 6: force-refresh from /nudges)
+ */
+export async function runProactiveScanForUser(userId: string): Promise<number> {
+  let actionsCreated = 0
+  try {
+    const triggers = await scanUserTriggers(userId)
+    for (const trigger of triggers) {
+      const oneDayAgo = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000)
+      const existing = db.select({ id: schema.proactiveActions.id })
+        .from(schema.proactiveActions)
+        .where(and(
+          eq(schema.proactiveActions.userId, userId),
+          eq(schema.proactiveActions.chatId, trigger.chatId),
+          eq(schema.proactiveActions.trigger, trigger.type),
+          gt(schema.proactiveActions.createdAt, new Date(oneDayAgo * 1000)),
+        ))
+        .get()
+      if (existing) continue
+      const ok = await generateAction(trigger)
+      if (ok) actionsCreated++
+    }
+    lastScanAt.set(userId, Date.now())
+  } catch (err) {
+    console.error(`[PROACTIVE] Error scanning user ${userId}:`, err)
+  }
+  return actionsCreated
+}
+
+/**
  * Scan one user's chats for triggers (rule-based, no LLM)
  */
 async function scanUserTriggers(userId: string): Promise<ProactiveTrigger[]> {
@@ -138,12 +170,17 @@ async function scanUserTriggers(userId: string): Promise<ProactiveTrigger[]> {
     const lastMsgTime = lastMsg.createdAt ? new Date(lastMsg.createdAt).getTime() : 0
     const hoursSinceLastMsg = (now - lastMsgTime) / (1000 * 60 * 60)
 
-    // ── SILENCE TRIGGER (personal chats only) ──
-    if (isPersonal && hoursSinceLastMsg > 7 * 24) { // 7 days
+    // ── SILENCE TRIGGER (personal chats only) — v2: personalized threshold ──
+    const baseline = getBaseline(userId, chat.chatId)
+    const silenceThresholdHours = (baseline && baseline.avgMessagesPerDay > 0)
+      ? Math.max(72, (3 / baseline.avgMessagesPerDay) * 24) // 3x their normal interval, min 3 days
+      : 7 * 24 // fallback: 7 days
+
+    if (isPersonal && hoursSinceLastMsg > silenceThresholdHours) {
       triggers.push({
         userId, chatId: chat.chatId, chatName,
         type: 'silence',
-        context: `Молчание ${Math.floor(hoursSinceLastMsg / 24)} дней с ${chatName} (${chat.relationshipType})`,
+        context: `Молчание ${Math.floor(hoursSinceLastMsg / 24)} дней с ${chatName} (${chat.relationshipType}). Обычно общаетесь чаще.`,
       })
     }
 
@@ -178,6 +215,74 @@ async function scanUserTriggers(userId: string): Promise<ProactiveTrigger[]> {
         context: `${chatName} написал ${recentFromContact.length} сообщений за 2 часа, нет ответа`,
       })
     }
+
+    // ── MOOD TRIGGER (Phase 4) ──
+    if (isPersonal) {
+      try {
+        const trend = getMoodTrend(userId, chat.chatId)
+        if (trend && trend.significantChange && trend.trend === 'declining') {
+          triggers.push({
+            userId, chatId: chat.chatId, chatName,
+            type: 'mood',
+            context: `Настроение ${chatName} ухудшилось: ${trend.current}. Тренд: ${trend.trend}. Возможно, стоит проявить заботу.`,
+          })
+        }
+      } catch {}
+    }
+
+    // ── BEHAVIOR CHANGE TRIGGER (v2: baseline deviation) ──
+    if (baseline && baseline.sampleSize >= 20 && recentMsgs.length >= 3) {
+      try {
+        const recentTexts: string[] = []
+        for (const m of recentMsgs.filter(m => m.senderId !== userId)) {
+          try { recentTexts.push(await decrypt(m.content)) } catch {}
+        }
+        if (recentTexts.length >= 2) {
+          const mood = quickMoodSignal(recentTexts, 'neutral', baseline)
+          if (mood.deviations.length >= 2) {
+            triggers.push({
+              userId, chatId: chat.chatId, chatName,
+              type: 'behavior_change',
+              context: `Поведение ${chatName} изменилось: ${mood.deviations.join('; ')}. Возможно, что-то происходит.`,
+            })
+          }
+        }
+      } catch {}
+    }
+
+    // ── UPCOMING DATE TRIGGER (v2: anticipatory calendar) ──
+    try {
+      const memories = getActiveMemories(userId, chat.chatId)
+      const dateMemories = memories.filter(m => m.category === 'date')
+      for (const dm of dateMemories) {
+        // Try to detect dates like "18 апреля", "день рождения 5 марта" etc.
+        const dateMatch = dm.fact.match(/(\d{1,2})\s*(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)/i)
+        if (dateMatch) {
+          const months: Record<string, number> = {
+            'января': 0, 'февраля': 1, 'марта': 2, 'апреля': 3, 'мая': 4, 'июня': 5,
+            'июля': 6, 'августа': 7, 'сентября': 8, 'октября': 9, 'ноября': 10, 'декабря': 11,
+          }
+          const day = parseInt(dateMatch[1])
+          const month = months[dateMatch[2].toLowerCase()]
+          if (month !== undefined) {
+            const now = new Date()
+            const thisYear = new Date(now.getFullYear(), month, day)
+            // If the date already passed this year, check next year
+            if (thisYear.getTime() < now.getTime() - 24 * 60 * 60 * 1000) {
+              thisYear.setFullYear(thisYear.getFullYear() + 1)
+            }
+            const daysUntil = Math.ceil((thisYear.getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
+            if (daysUntil > 0 && daysUntil <= 7) {
+              triggers.push({
+                userId, chatId: chat.chatId, chatName,
+                type: 'upcoming_date',
+                context: `У ${chatName} скоро важная дата: "${dm.fact}" (через ${daysUntil} дн.). Подготовьтесь!`,
+              })
+            }
+          }
+        }
+      }
+    } catch {}
   }
 
   // ── GOAL STALL TRIGGER ──
@@ -208,6 +313,59 @@ async function scanUserTriggers(userId: string): Promise<ProactiveTrigger[]> {
 }
 
 /**
+ * v2: Quick event-driven proactive check — called on every incoming message.
+ * Rule-based only (no LLM), <1ms. If trigger found, enqueues LLM generation.
+ */
+export async function quickProactiveCheck(userId: string, chatId: string, senderId: string): Promise<void> {
+  if (senderId === userId) return // only check for incoming messages from others
+
+  try {
+    const chat = db.select({ name: schema.chats.name, type: schema.chats.type })
+      .from(schema.chats).where(eq(schema.chats.id, chatId)).get()
+    if (!chat || chat.type !== 'private') return
+
+    const chatName = chat.name || 'Chat'
+
+    // Check burst: 3+ messages in 2h without user reply
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    const recentMsgs = db.select({ senderId: schema.messages.senderId })
+      .from(schema.messages)
+      .where(and(
+        eq(schema.messages.chatId, chatId),
+        eq(schema.messages.visibility, 'normal'),
+        gt(schema.messages.createdAt, twoHoursAgo),
+      ))
+      .all()
+
+    const fromContact = recentMsgs.filter(m => m.senderId !== userId).length
+    const fromUser = recentMsgs.filter(m => m.senderId === userId).length
+
+    if (fromContact >= 3 && fromUser === 0) {
+      // Dedup check
+      const oneDayAgo = new Date(Date.now() - DEDUP_WINDOW)
+      const existing = db.select({ id: schema.proactiveActions.id })
+        .from(schema.proactiveActions)
+        .where(and(
+          eq(schema.proactiveActions.userId, userId),
+          eq(schema.proactiveActions.chatId, chatId),
+          eq(schema.proactiveActions.trigger, 'burst'),
+          gt(schema.proactiveActions.createdAt, oneDayAgo),
+        ))
+        .get()
+
+      if (!existing) {
+        // Non-blocking LLM generation
+        generateAction({
+          userId, chatId, chatName,
+          type: 'burst',
+          context: `${chatName} написал ${fromContact} сообщений за 2 часа, нет ответа`,
+        }).catch(() => {})
+      }
+    }
+  } catch {}
+}
+
+/**
  * Generate a proactive action using haiku (one cheap LLM call per trigger)
  */
 async function generateAction(trigger: ProactiveTrigger): Promise<boolean> {
@@ -219,6 +377,10 @@ async function generateAction(trigger: ProactiveTrigger): Promise<boolean> {
     goal_stall: 'цель застопорилась',
     burst: 'много сообщений без ответа',
     mood: 'изменение настроения',
+    behavior_change: 'изменение поведения в общении',
+    upcoming_date: 'приближается важная дата',
+    detected_need: 'обнаружена потребность в переписке',
+    fraud_suspicion: 'подозрение на мошенничество',
   }
 
   try {

@@ -6,6 +6,7 @@
 
 import { chatCompletion } from './openrouter'
 import { getModelConfig } from './model-router'
+import { getPersonaFromIntel, updatePersona as updatePersonaIntel, recordMood as recordMoodIntel, getContactIntel } from './contact-intelligence'
 
 export interface PersonaProfile {
   name: string
@@ -57,6 +58,7 @@ const MIN_MESSAGES_FOR_PROFILE = 2
 
 /**
  * D2: Update persona cache mood from mood radar
+ * Now also persists to contact-intelligence DB
  */
 export function updatePersonaMood(chatId: string, userId: string, mood: string) {
   const key = `${chatId}:${userId}`
@@ -64,17 +66,31 @@ export function updatePersonaMood(chatId: string, userId: string, mood: string) 
   if (cached && Date.now() - cached.extractedAt < CACHE_TTL) {
     cached.currentState.recentMood = mood
   }
+  // Also persist to contact intelligence
+  try {
+    recordMoodIntel(userId, chatId, mood, null, 70)
+  } catch {}
 }
 
 export function getCachedPersona(chatId: string, userId: string): PersonaProfile | null {
+  // Check in-memory cache first (fast path)
   const key = `${chatId}:${userId}`
   const cached = personaCache.get(key)
-  if (!cached) return null
-  if (Date.now() - cached.extractedAt > CACHE_TTL) {
-    personaCache.delete(key)
-    return null
+  if (cached && Date.now() - cached.extractedAt < CACHE_TTL) {
+    return cached
   }
-  return cached
+  if (cached) personaCache.delete(key)
+
+  // Fall through to persistent contact-intelligence DB
+  try {
+    const fromDB = getPersonaFromIntel(userId, chatId)
+    if (fromDB) {
+      // Populate in-memory cache for fast subsequent reads
+      personaCache.set(key, fromDB)
+      return fromDB
+    }
+  } catch {}
+  return null
 }
 
 /**
@@ -197,8 +213,9 @@ ${fullChatHistory.slice(-3000)}`,
       messageCountUsed: contactMessages.length,
     }
 
-    // Cache it
+    // Cache it (in-memory for fast reads)
     personaCache.set(`profile:${contactName}`, profile)
+    // Note: Callers should also persist to contact-intelligence via updatePersonaIntel()
     return profile
   } catch (e) {
     // Fallback minimal profile

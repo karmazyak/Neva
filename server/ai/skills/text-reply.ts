@@ -61,14 +61,62 @@ export const textReplySkill: Skill = {
     // Filter out existing system prompts from chatHistory
     const chatMessages = rawHistory.filter(m => m.role !== 'system')
 
-    // Load owner's style profile for natural replies
+    // Phase 3: Prefer per-contact style, fallback to global
     let styleHint = ''
     try {
-      const { getOwnProfile } = await import('../style/cache')
-      const cached = getOwnProfile(ctx.userId)
-      if (cached) {
-        const p = cached.profile
-        styleHint = `\n\nIMPORTANT - Match this person's writing style:\n${p.styleInstruction}\nUse these phrases naturally: ${(p.commonPhrases || []).join(', ')}\nMessage length: ~${p.avgMessageLength} chars\nEmoji: ${p.emojiFrequency}\nCapitalization: ${p.capitalization}`
+      const { getContactIntel } = await import('../contact-intelligence')
+      const chatId = (ctx as any).chatId
+      if (chatId) {
+        const intel = getContactIntel(ctx.userId, chatId)
+        if (intel?.myStyleForThem) {
+          const p = intel.myStyleForThem as any
+          styleHint = `\n\nIMPORTANT - Match this person's writing style FOR THIS CONTACT:\n${p.styleInstruction || ''}\nUse these phrases naturally: ${(p.commonPhrases || []).join(', ')}\nMessage length: ~${p.avgMessageLength || 50} chars\nEmoji: ${p.emojiFrequency || 'иногда'}\nCapitalization: ${p.capitalization || 'стандарт'}`
+        }
+      }
+      // Fallback to global style
+      if (!styleHint) {
+        const { getOwnProfile } = await import('../style/cache')
+        const cached = getOwnProfile(ctx.userId)
+        if (cached) {
+          const p = cached.profile
+          styleHint = `\n\nIMPORTANT - Match this person's writing style:\n${p.styleInstruction}\nUse these phrases naturally: ${(p.commonPhrases || []).join(', ')}\nMessage length: ~${p.avgMessageLength} chars\nEmoji: ${p.emojiFrequency}\nCapitalization: ${p.capitalization}`
+        }
+      }
+    } catch {}
+
+    // Phase 2: Inject memory context
+    let memoryHint = ''
+    try {
+      const { getMemoryPromptBlock } = await import('../memory-manager')
+      const chatId = (ctx as any).chatId
+      if (chatId) {
+        memoryHint = getMemoryPromptBlock(ctx.userId, chatId)
+      }
+    } catch {}
+
+    // Phase 5: Inject active goal
+    let goalHint = ''
+    try {
+      const { getActiveGoal } = await import('../goals')
+      const chatId = (ctx as any).chatId
+      if (chatId) {
+        const goal = getActiveGoal(ctx.userId, chatId)
+        if (goal) {
+          goalHint = `\n\nACTIVE GOAL: The user wants to "${goal.goal}" using strategy: "${goal.strategy}". Generate replies that ADVANCE this goal. Don't contradict it.`
+        }
+      }
+    } catch {}
+
+    // Phase 4: Inject mood context
+    let moodHint = ''
+    try {
+      const { getLatestMood } = await import('../contact-intelligence')
+      const chatId = (ctx as any).chatId
+      if (chatId) {
+        const mood = getLatestMood(ctx.userId, chatId)
+        if (mood && mood.mood !== 'normal') {
+          moodHint = `\nContact's current mood: ${mood.mood}${mood.note ? ` (${mood.note})` : ''}. Be empathetic.`
+        }
       }
     } catch {}
 
@@ -85,7 +133,7 @@ Rules:
 - Do NOT start with the user's name
 - Just write the message directly, as if you are chatting
 - Do NOT just say "привет" or a generic greeting — respond meaningfully to what was said
-${ctx.prompt ? `\nContext hint: "${ctx.prompt}"` : ''}${styleHint}${getTimeContext()}`,
+${ctx.prompt ? `\nContext hint: "${ctx.prompt}"` : ''}${styleHint}${memoryHint}${goalHint}${moodHint}${getTimeContext()}`,
       }
 
       const messages = [systemInstruction, ...chatMessages]
@@ -117,7 +165,7 @@ Rules:
 - Do NOT add labels like "Variant 1:" — just write the reply text
 - Match the conversation style and tone
 - Do NOT generate generic greetings like "привет" — respond to the actual content
-${ctx.prompt ? `\nUser's hint for replies: "${ctx.prompt}"` : ''}${styleHint}${getTimeContext()}`,
+${ctx.prompt ? `\nUser's hint for replies: "${ctx.prompt}"` : ''}${styleHint}${memoryHint}${goalHint}${moodHint}${getTimeContext()}`,
     }
 
     const messages = [systemInstruction, ...chatMessages]
