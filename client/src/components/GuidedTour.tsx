@@ -224,8 +224,8 @@ export function TourProgress() {
   const label = TOUR_STEP_LABELS[currentStep] || ''
 
   return (
-    <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] fade-in">
-      <div className="bg-bg-secondary/95 backdrop-blur-sm border border-accent/20 rounded-2xl px-4 py-2.5 shadow-lg flex items-center gap-3">
+    <div className="fixed top-3 right-3 z-[60] fade-in max-w-[260px]">
+      <div className="bg-bg-secondary/95 backdrop-blur-sm border border-accent/20 rounded-2xl px-3 py-2 shadow-lg flex items-center gap-2">
         <span className="text-xs text-text-primary font-medium">{label}</span>
         <span className="text-[11px] text-text-secondary">{stepIndex + 1}/{totalSteps}</span>
         <button

@@ -22,7 +22,7 @@ export default function SavedMessages() {
       <div className="flex items-center gap-3 px-4 py-3 bg-bg-secondary border-b border-border">
         <button onClick={() => navigate('/')} className="p-1 rounded-full hover:bg-bg-hover text-text-secondary"><ArrowLeft size={22} /></button>
         <Bookmark size={20} className="text-accent" />
-        <h1 className="font-semibold text-text-primary">Saved Messages</h1>
+        <h1 className="font-semibold text-text-primary">Сохранённые</h1>
         <span className="text-sm text-text-secondary">{items.length}</span>
       </div>
       <div className="flex-1 overflow-y-auto">
@@ -35,8 +35,8 @@ export default function SavedMessages() {
             <div className="w-16 h-16 rounded-full bg-bg-input flex items-center justify-center mb-4">
               <Bookmark size={28} className="text-text-secondary" />
             </div>
-            <p className="text-text-primary font-medium mb-1">No saved messages yet</p>
-            <p className="text-text-secondary text-sm">Long-press any message and tap "Save" to bookmark it for later.</p>
+            <p className="text-text-primary font-medium mb-1">Пока ничего не сохранено</p>
+            <p className="text-text-secondary text-sm">Нажмите и удерживайте сообщение, чтобы сохранить его.</p>
           </div>
         ) : items.map(item => (
           <div key={item.id} className="px-4 py-3 border-b border-border hover:bg-bg-hover transition-colors group">

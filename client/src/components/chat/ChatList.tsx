@@ -135,7 +135,7 @@ export default function ChatList({ onMenuClick, onNewChat }: ChatListProps) {
         >
           <Menu size={22} />
         </button>
-        <h1 className="md:hidden text-lg font-semibold text-text-primary pl-1">Chats</h1>
+        <h1 className="md:hidden text-lg font-semibold text-text-primary pl-1">Чаты</h1>
 
         <div className="flex-1 relative">
           <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />

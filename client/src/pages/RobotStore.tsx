@@ -98,9 +98,9 @@ export default function RobotStore() {
   ]
 
   const sortOptions = [
-    { value: 'popular', label: 'Popular', icon: TrendingUp },
-    { value: 'rating', label: 'Top Rated', icon: Star },
-    { value: 'newest', label: 'Newest', icon: Clock },
+    { value: 'popular', label: 'Популярные', icon: TrendingUp },
+    { value: 'rating', label: 'Лучшие', icon: Star },
+    { value: 'newest', label: 'Новые', icon: Clock },
   ]
 
   return (
@@ -112,7 +112,7 @@ export default function RobotStore() {
             <ArrowLeft size={22} />
           </button>
           <Store size={22} className="text-accent" />
-          <h1 className="text-lg font-semibold text-text-primary">Robot Store</h1>
+          <h1 className="text-lg font-semibold text-text-primary">Магазин роботов</h1>
         </div>
 
         {/* Search */}
@@ -121,7 +121,7 @@ export default function RobotStore() {
             <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />
             <input
               type="text"
-              placeholder="Search robots..."
+              placeholder="Поиск роботов..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full bg-bg-input rounded-full pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none"
@@ -195,7 +195,7 @@ export default function RobotStore() {
                       <p className="text-text-secondary text-xs">by {agent.ownerName}</p>
                     </div>
                     {agent.featured && (
-                      <span className="bg-accent/20 text-accent text-xs px-2 py-0.5 rounded-full">Featured</span>
+                      <span className="bg-accent/20 text-accent text-xs px-2 py-0.5 rounded-full">Топ</span>
                     )}
                   </div>
 
@@ -254,14 +254,14 @@ export default function RobotStore() {
                   >
                     {isAlreadyInstalled(agent) ? (
                       <span className="flex items-center justify-center gap-1.5">
-                        <Check size={16} /> Installed
+                        <Check size={16} /> Установлен
                       </span>
                     ) : installing === agent.id ? (
-                      'Installing...'
+                      'Установка...'
                     ) : agent.price ? (
                       `$${agent.price}`
                     ) : (
-                      'Install Free'
+                      'Установить'
                     )}
                   </button>
                 </div>
@@ -359,7 +359,7 @@ export default function RobotStore() {
                   isAlreadyInstalled(detailAgent) ? 'bg-green-online/20 text-green-online' : 'bg-accent hover:bg-accent-hover text-white disabled:opacity-50'
                 }`}
               >
-                {isAlreadyInstalled(detailAgent) ? 'Installed' : detailAgent.price ? `Install $${detailAgent.price}` : 'Install Free'}
+                {isAlreadyInstalled(detailAgent) ? 'Установлен' : detailAgent.price ? `$${detailAgent.price}` : 'Установить'}
               </button>
             </div>
           </div>
@@ -371,7 +371,7 @@ export default function RobotStore() {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-bg-secondary rounded-2xl w-full max-w-sm shadow-2xl p-6">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-text-primary">Robot Installed!</h3>
+              <h3 className="text-lg font-semibold text-text-primary">Робот установлен!</h3>
               <button onClick={() => setShowInstallCard(null)} className="text-text-secondary hover:text-text-primary">
                 <X size={20} />
               </button>

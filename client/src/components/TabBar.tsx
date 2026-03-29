@@ -1,13 +1,13 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { MessageCircle, Sparkles, Bot, User, Heart } from 'lucide-react'
+import { MessageCircle, Sparkles, Bot, User, Users } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { PulseBeacon } from './GuidedTour'
 
 const tabs = [
-  { icon: MessageCircle, label: 'Chats', path: '/' },
-  { icon: Heart, label: 'Relations', path: '/relationships' },
+  { icon: MessageCircle, label: 'Чаты', path: '/' },
+  { icon: Users, label: 'Люди', path: '/relationships' },
   { icon: Sparkles, label: 'AI', path: '/ai-chat' },
-  { icon: User, label: 'Profile', path: '/profile' },
+  { icon: User, label: 'Профиль', path: '/profile' },
 ]
 
 export default function TabBar() {

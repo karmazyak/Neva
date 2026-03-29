@@ -60,9 +60,9 @@ export default function Profile() {
   if (!user) return null
 
   const stats = [
-    { label: 'Credits', value: balance ?? '...', icon: Coins, color: 'text-accent' },
-    { label: 'My Agents', value: agents.length, icon: Bot, color: 'text-accent' },
-    { label: 'Chats', value: chats.length, icon: MessageCircle, color: 'text-accent' },
+    { label: 'Кредиты', value: balance ?? '...', icon: Coins, color: 'text-accent' },
+    { label: 'Мои агенты', value: agents.length, icon: Bot, color: 'text-accent' },
+    { label: 'Чаты', value: chats.length, icon: MessageCircle, color: 'text-accent' },
   ]
 
   return (
@@ -72,7 +72,7 @@ export default function Profile() {
         <button onClick={() => navigate('/')} className="hidden md:block p-1 text-text-secondary hover:text-text-primary">
           <ArrowLeft size={22} />
         </button>
-        <h2 className="font-semibold text-text-primary text-lg">Profile</h2>
+        <h2 className="font-semibold text-text-primary text-lg">Профиль</h2>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -114,7 +114,7 @@ export default function Profile() {
           >
             <User size={20} className="text-accent flex-shrink-0" />
             <div className="flex-1 min-w-0">
-              <div className="text-xs text-text-secondary">Display Name</div>
+              <div className="text-xs text-text-secondary">Имя</div>
               {editingName ? (
                 <input
                   autoFocus
@@ -149,7 +149,7 @@ export default function Profile() {
           <div className="px-4 py-3 flex items-center gap-3 border-b border-border">
             <AtSign size={20} className="text-accent" />
             <div className="flex-1">
-              <div className="text-xs text-text-secondary">Username</div>
+              <div className="text-xs text-text-secondary">Логин</div>
               <div className="text-text-primary text-sm">@{user.username}</div>
             </div>
           </div>
@@ -157,7 +157,7 @@ export default function Profile() {
             <Mail size={20} className="text-accent" />
             <div className="flex-1">
               <div className="text-xs text-text-secondary">Email</div>
-              <div className="text-text-primary text-sm">{user.email || 'Not set'}</div>
+              <div className="text-text-primary text-sm">{user.email || 'Не указан'}</div>
             </div>
           </div>
         </div>
@@ -165,7 +165,7 @@ export default function Profile() {
         {/* Custom Status */}
         <div className="mx-4 bg-bg-secondary rounded-xl overflow-hidden mb-4">
           <div className="px-4 py-3">
-            <div className="text-xs text-text-secondary mb-2">Status</div>
+            <div className="text-xs text-text-secondary mb-2">Статус</div>
             {editingStatus ? (
               <div className="flex items-center gap-2">
                 <input
@@ -199,7 +199,7 @@ export default function Profile() {
               >
                 {statusEmoji && <span className="text-lg">{statusEmoji}</span>}
                 <span className={statusText ? 'text-text-primary' : 'text-text-secondary'}>
-                  {statusText || 'Set a status...'}
+                  {statusText || 'Установить статус...'}
                 </span>
               </button>
             )}
@@ -215,8 +215,8 @@ export default function Profile() {
           >
             <Palette size={20} className="text-text-secondary" />
             <div className="flex-1 text-left">
-              <div className="text-text-primary text-sm">Appearance</div>
-              <div className="text-xs text-text-secondary">{theme === 'dark' ? 'Dark theme' : 'Light theme'}</div>
+              <div className="text-text-primary text-sm">Оформление</div>
+              <div className="text-xs text-text-secondary">{theme === 'dark' ? 'Тёмная тема' : 'Светлая тема'}</div>
             </div>
             <ChevronRight size={16} className={`text-text-secondary transition-transform ${showThemePicker ? 'rotate-90' : ''}`} />
           </button>
@@ -225,8 +225,8 @@ export default function Profile() {
           {showThemePicker && (
             <div className="border-b border-border px-4 py-3 space-y-2 bg-bg-primary/30">
               {[
-                { id: 'dark' as const, label: 'Dark', desc: 'Easy on the eyes' },
-                { id: 'light' as const, label: 'Light', desc: 'Classic bright look' },
+                { id: 'dark' as const, label: 'Тёмная', desc: 'Бережёт глаза' },
+                { id: 'light' as const, label: 'Светлая', desc: 'Классический вид' },
               ].map((t) => (
                 <button
                   key={t.id}
@@ -257,8 +257,8 @@ export default function Profile() {
           >
             <Shield size={20} className="text-text-secondary" />
             <div className="flex-1 text-left">
-              <div className="text-text-primary text-sm">Privacy & Security</div>
-              <div className="text-xs text-text-secondary">End-to-end encryption</div>
+              <div className="text-text-primary text-sm">Конфиденциальность</div>
+              <div className="text-xs text-text-secondary">Сквозное шифрование</div>
             </div>
             <ChevronRight size={16} className="text-text-secondary" />
           </button>
@@ -423,7 +423,7 @@ export default function Profile() {
             className="w-full bg-bg-secondary rounded-xl px-4 py-3 flex items-center gap-3 text-danger hover:bg-bg-hover transition-colors"
           >
             <LogOut size={20} />
-            <span className="text-sm font-medium">Log Out</span>
+            <span className="text-sm font-medium">Выйти</span>
           </button>
         </div>
 

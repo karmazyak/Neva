@@ -394,7 +394,7 @@ export default function MyRobots() {
           <ArrowLeft size={22} />
         </button>
         <Bot size={22} className="text-accent" />
-        <h1 className="text-lg font-semibold text-text-primary">My Robots</h1>
+        <h1 className="text-lg font-semibold text-text-primary">Мои роботы</h1>
       </div>
 
       <div className="flex-1 flex overflow-hidden">
@@ -405,7 +405,7 @@ export default function MyRobots() {
             className="flex items-center gap-3 px-4 py-3 text-accent hover:bg-bg-hover transition-colors border-b border-border"
           >
             <Plus size={20} />
-            <span className="font-medium">Create New Robot</span>
+            <span className="font-medium">Создать робота</span>
           </button>
 
           <div className="flex-1 overflow-y-auto">
@@ -1072,8 +1072,8 @@ export default function MyRobots() {
                       <div className="flex items-center gap-3">
                         <Globe size={18} className="text-text-secondary" />
                         <div>
-                          <div className="text-text-primary text-sm font-medium">Publish to Robot Store</div>
-                          <div className="text-text-secondary text-xs">Make this robot available to everyone</div>
+                          <div className="text-text-primary text-sm font-medium">Опубликовать в магазине</div>
+                          <div className="text-text-secondary text-xs">Сделать робота доступным для всех</div>
                         </div>
                       </div>
                       <button onClick={() => setIsPublic(!isPublic)}
@@ -1106,8 +1106,8 @@ export default function MyRobots() {
           <div className="flex-1 hidden md:flex items-center justify-center">
             <div className="text-center">
               <Sparkles size={48} className="text-text-secondary/30 mx-auto mb-4" />
-              <h2 className="text-xl text-text-primary font-medium">My Robots</h2>
-              <p className="text-text-secondary mt-2">Select a robot to configure</p>
+              <h2 className="text-xl text-text-primary font-medium">Мои роботы</h2>
+              <p className="text-text-secondary mt-2">Выберите робота для настройки</p>
             </div>
           </div>
         )}
