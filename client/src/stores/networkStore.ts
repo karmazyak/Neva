@@ -56,7 +56,7 @@ interface NetworkState {
   loadMatches: () => Promise<void>
   loadConsent: () => Promise<void>
   loadAll: () => Promise<void>
-  createNeed: (data: { description: string; category: string; urgency?: string; visibility?: string }) => Promise<void>
+  createNeed: (data: { description: string; category: string; urgency?: string; visibility?: string }) => Promise<Need | null>
   createOffer: (data: { description: string; category: string }) => Promise<void>
   deleteNeed: (id: string) => Promise<void>
   deleteOffer: (id: string) => Promise<void>
@@ -109,8 +109,9 @@ export const useNetworkStore = create<NetworkState>((set, get) => ({
   },
 
   createNeed: async (data) => {
-    await api.createNeed(data)
+    const res = await api.createNeed(data)
     await get().loadNeeds()
+    return (res?.need as Need) || null
   },
 
   createOffer: async (data) => {

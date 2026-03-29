@@ -291,6 +291,14 @@ export function handleWSMessage(ws: ServerWebSocket<WSData>, message: string) {
         }
         break
 
+      case 'agent_dialog_respond':
+        if (data.dialogId && typeof data.dialogId === 'string') {
+          import('./ai/consent').then(({ handleConsentResponse }) => {
+            handleConsentResponse(data.dialogId, !!data.approved, data.message)
+          })
+        }
+        break
+
       case 'subscribe':
         if (data.chatId && typeof data.chatId === 'string') {
           const member = db.select()

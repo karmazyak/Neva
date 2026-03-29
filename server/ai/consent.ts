@@ -2,6 +2,13 @@ import { db, schema } from '../db'
 import { eq, and } from 'drizzle-orm'
 import { sendToUser } from '../ws'
 import type { RelationshipLevel, AccessRule, ConsentType } from '../a2a/types'
+import {
+  handleConsentDialog,
+  handleWhosFreeChildResponse,
+  handleMatchProposalResponse,
+  handleGatherChildResponse,
+} from '../a2a/agent-skills-internal'
+import { respondToDialog } from '../a2a/agent-dialog'
 
 // ── Access Rules ────────────────────────────────────────────────────────────
 
@@ -21,7 +28,6 @@ const RELATIONSHIP_HIERARCHY: Record<RelationshipLevel, number> = {
 }
 
 export function getRelationshipLevel(userId: string, contactId: string): RelationshipLevel {
-  // Check contact_intelligence for existing relationship type
   const intel = db.select({ relationshipType: schema.contactIntelligence.relationshipType })
     .from(schema.contactIntelligence)
     .where(and(
@@ -57,85 +63,119 @@ export function checkAccess(
   return { allowed: true, requiresConsent: rule.requiresConsent }
 }
 
-// ── Consent Request/Response ────────────────────────────────────────────────
-
-// Pending consent resolvers — keyed by request ID
-const pendingConsents = new Map<string, {
-  resolve: (result: ConsentResult) => void
-  timeout: ReturnType<typeof setTimeout>
-}>()
+// ── Consent via Agent Dialogs (non-blocking) ─────────────────────────────────
 
 export interface ConsentResult {
   approved: boolean
   message?: string
   expired?: boolean
+  dialogId?: string
 }
 
+/**
+ * Request consent through the agent dialog system.
+ * Returns a dialogId immediately — no more blocking Promises.
+ * The result arrives via WebSocket agent_dialog_update.
+ */
+export function requestConsentAsync(
+  fromUserId: string,
+  toUserId: string,
+  type: ConsentType,
+  context: string,
+  timeoutMs: number = 86400000,
+): { dialogId: string; autoResolved: boolean; approved?: boolean } {
+  return handleConsentDialog(fromUserId, toUserId, type, context, timeoutMs)
+}
+
+/**
+ * Legacy blocking version — kept for backward compat with external A2A executor.
+ * Uses dialog system under the hood but polls for result.
+ */
 export async function requestConsent(
   fromUserId: string,
   toUserId: string,
   type: ConsentType,
   context: string,
-  timeoutMs: number = 86400000, // 24h default
+  timeoutMs: number = 86400000,
 ): Promise<ConsentResult> {
-  const id = crypto.randomUUID()
-  const expiresAt = new Date(Date.now() + timeoutMs)
+  const result = handleConsentDialog(fromUserId, toUserId, type, context, timeoutMs)
 
-  // Persist to DB
-  db.insert(schema.consentRequests).values({
-    id,
-    fromUserId,
-    toUserId,
-    type,
-    context,
-    status: 'pending',
-    expiresAt,
-  }).run()
+  if (result.autoResolved) {
+    return {
+      approved: result.approved!,
+      dialogId: result.dialogId,
+    }
+  }
 
-  // Get requester name for display
-  const fromUser = db.select({ displayName: schema.users.displayName })
-    .from(schema.users)
-    .where(eq(schema.users.id, fromUserId))
-    .get()
+  // Poll DB for response (with timeout)
+  const startTime = Date.now()
+  const pollInterval = 2000 // 2s
 
-  // Push to target user via WebSocket
-  sendToUser(toUserId, {
-    type: 'consent_request',
-    request: {
-      id,
-      fromUserId,
-      fromUserName: fromUser?.displayName || 'Кто-то',
-      consentType: type,
-      context,
-      expiresAt: expiresAt.toISOString(),
-    },
-  })
-
-  // Wait for response or timeout
   return new Promise<ConsentResult>((resolve) => {
-    const timeout = setTimeout(() => {
-      pendingConsents.delete(id)
-      // Mark expired in DB
-      db.update(schema.consentRequests)
-        .set({ status: 'expired' })
-        .where(eq(schema.consentRequests.id, id))
-        .run()
-      resolve({ approved: false, expired: true })
-    }, Math.min(timeoutMs, 86400000))
+    const check = () => {
+      const dialog = db.select({ status: schema.agentDialogs.status, result: schema.agentDialogs.result })
+        .from(schema.agentDialogs)
+        .where(eq(schema.agentDialogs.id, result.dialogId))
+        .get()
 
-    pendingConsents.set(id, { resolve, timeout })
+      if (!dialog || dialog.status === 'pending') {
+        if (Date.now() - startTime > timeoutMs) {
+          resolve({ approved: false, expired: true, dialogId: result.dialogId })
+          return
+        }
+        setTimeout(check, pollInterval)
+        return
+      }
+
+      const approved = dialog.status === 'approved' || dialog.status === 'auto_approved'
+      resolve({
+        approved,
+        dialogId: result.dialogId,
+        message: (dialog.result as any)?.message,
+      })
+    }
+    setTimeout(check, pollInterval)
   })
 }
 
 /**
- * Called from WebSocket handler when user responds to a consent request.
+ * Handle consent/dialog response — routes to appropriate handler based on dialog type.
  */
 export function handleConsentResponse(
   requestId: string,
   approved: boolean,
   message?: string,
 ): void {
-  // Update DB
+  // First, check if this is a dialog ID (new system)
+  const dialog = db.select({ id: schema.agentDialogs.id, type: schema.agentDialogs.type })
+    .from(schema.agentDialogs)
+    .where(eq(schema.agentDialogs.id, requestId))
+    .get()
+
+  if (dialog) {
+    // Route to appropriate handler based on dialog type
+    if (dialog.type === 'whos_free') {
+      // Check if this belongs to a gather parent
+      const fullDialog = db.select()
+        .from(schema.agentDialogs)
+        .where(eq(schema.agentDialogs.id, requestId))
+        .get()
+      const isGatherChild = fullDialog?.contextData && (fullDialog.contextData as any).isGatherChild
+
+      if (isGatherChild) {
+        handleGatherChildResponse(requestId, approved, message)
+      } else {
+        handleWhosFreeChildResponse(requestId, approved, message)
+      }
+    } else if (dialog.type === 'match_proposal') {
+      handleMatchProposalResponse(requestId, approved, message)
+    } else {
+      respondToDialog(requestId, approved, message)
+    }
+    return
+  }
+
+  // Legacy: update consent_requests table directly
   db.update(schema.consentRequests)
     .set({
       status: approved ? 'approved' : 'denied',
@@ -144,33 +184,30 @@ export function handleConsentResponse(
     .where(eq(schema.consentRequests.id, requestId))
     .run()
 
-  // Resolve pending promise
-  const pending = pendingConsents.get(requestId)
-  if (pending) {
-    clearTimeout(pending.timeout)
-    pendingConsents.delete(requestId)
-    pending.resolve({ approved, message })
-  }
-
-  // Notify the requester
-  const request = db.select()
+  // If there's a linked dialog, respond to that too
+  const consentReq = db.select({ dialogId: schema.consentRequests.dialogId, fromUserId: schema.consentRequests.fromUserId, toUserId: schema.consentRequests.toUserId })
     .from(schema.consentRequests)
     .where(eq(schema.consentRequests.id, requestId))
     .get()
 
-  if (request) {
-    sendToUser(request.fromUserId, {
+  if (consentReq?.dialogId) {
+    respondToDialog(consentReq.dialogId, approved, message)
+  }
+
+  // Notify the requester
+  if (consentReq) {
+    sendToUser(consentReq.fromUserId, {
       type: 'consent_response',
       requestId,
       approved,
       message,
-      fromUserId: request.toUserId,
+      fromUserId: consentReq.toUserId,
     })
   }
 }
 
 /**
- * Get pending consent requests for a user.
+ * Get pending consent requests for a user (includes both legacy and dialog-based).
  */
 export function getPendingConsents(userId: string) {
   return db.select()

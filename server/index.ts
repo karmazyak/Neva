@@ -18,6 +18,7 @@ import savedRoutes from './routes/saved'
 import folderRoutes from './routes/folders'
 import goalRoutes from './routes/goals'
 import networkRoutes from './routes/network'
+import agentDialogRoutes from './routes/agent-dialogs'
 import { a2aRoutes } from './a2a'
 import { startScheduler } from './scheduler'
 import { existsSync } from 'fs'
@@ -91,6 +92,7 @@ app.route('/api/saved', savedRoutes)
 app.route('/api/folders', folderRoutes)
 app.route('/api/goals', goalRoutes)
 app.route('/api/network', networkRoutes)
+app.route('/api/agent', agentDialogRoutes)
 app.route('/a2a', a2aRoutes)
 
 // Get available AI models (requires auth)

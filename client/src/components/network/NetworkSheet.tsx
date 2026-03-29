@@ -70,7 +70,10 @@ export default function NetworkSheet() {
     try {
       const results = await triggerMatch(needId)
       setMatchResults(results)
-    } catch {} finally { setMatchingNeedId(null) }
+    } catch (err) {
+      console.error('[NetworkSheet] Match failed:', err)
+      setMatchResults([])
+    } finally { setMatchingNeedId(null) }
   }
 
   const daysLeft = (expiresAt: string) => {

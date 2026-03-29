@@ -140,6 +140,16 @@ body {
   to { opacity: 1; transform: translateX(0) scale(1); }
 }
 
+/* Slide in from right (agent panel) */
+.animate-slide-in-right {
+  animation: slideInRight 0.3s var(--ease-smooth);
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
 /* Context panel */
 .panel-slide-in {
   animation: panelSlideIn 0.3s var(--ease-spring);

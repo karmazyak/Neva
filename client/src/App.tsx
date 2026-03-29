@@ -15,7 +15,7 @@ import ToastContainer from './components/ui/Toast'
 import Onboarding from './components/Onboarding'
 import TabBar from './components/TabBar'
 import { TourProvider, TourProgress } from './components/GuidedTour'
-import ProactiveCard from './components/ProactiveCard'
+// ProactiveCard moved inline to People tab
 import { registerServiceWorker, subscribeToPush } from './lib/pushNotifications'
 import { useNotifications } from './hooks/useNotifications'
 
@@ -122,7 +122,6 @@ function App() {
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
       <TabBar />
-      <ProactiveCard />
     </TourProvider>
   )
 }

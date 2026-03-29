@@ -359,6 +359,33 @@ export async function processAgentResponse(
       }
     } catch {}
 
+    // Check if reply is actually needed (skip "ok", "👍", thanks, etc.)
+    const lastMsg = messageContent.trim().toLowerCase()
+    const noReplyPatterns = /^(ок|ok|ладно|хорошо|понял|спасибо|спс|пасиб|ага|угу|да|👍|👌|🤝|✅|❤️|💪|🔥|😊|😄|😂|🙏|👏|👋|лайк|круто|класс|супер|отлично|ясно|принято|получил|увидел|записал)$/i
+    if (noReplyPatterns.test(lastMsg) || lastMsg.length <= 2) {
+      continue // No need to reply to acknowledgements
+    }
+
+    // For ambiguous messages, ask LLM if reply is needed
+    if (lastMsg.length < 30) {
+      try {
+        const { getModelConfig } = await import('./model-router')
+        const classConfig = getModelConfig('classification')
+        const needsReply = await chatCompletion({
+          model: classConfig.model,
+          messages: [
+            { role: 'system', content: 'Определи, требует ли последнее сообщение в чате ответа. Если это подтверждение, одобрение, завершение разговора, стикер, реакция — ответ НЕ нужен. Если вопрос, просьба, новая тема — ответ нужен. Верни ТОЛЬКО одно слово: YES или NO.' },
+            { role: 'user', content: `Последние сообщения:\n${history.slice(-3).map(m => `${m.senderName}: ${m.content}`).join('\n')}` },
+          ],
+          temperature: 0.1,
+          maxTokens: 5,
+        })
+        if (needsReply.trim().toUpperCase().startsWith('NO')) {
+          continue
+        }
+      } catch {}
+    }
+
     // Use text_reply skill for auto-responses
     // For auto mode, use a generic conversational prompt instead of the agent's
     // skill-specific system prompt (which may contain instructions like "generate 3 variants")

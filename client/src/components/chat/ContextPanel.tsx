@@ -1086,7 +1086,32 @@ export default function ContextPanel({ chatId, onClose, onInsertDraft }: Context
                     <Bot size={12} />
                     Автопилот
                   </div>
-                  <div className="flex items-center gap-3 bg-bg-hover rounded-lg px-3 py-2.5">
+                  <div
+                    className="flex items-center gap-3 bg-bg-hover rounded-lg px-3 py-2.5 cursor-pointer hover:bg-bg-hover/80 transition-colors"
+                    onClick={async () => {
+                      try {
+                        if (agentConfig) {
+                          await api.removeAgentFromChat(chatId)
+                        } else {
+                          // Find an auto-capable agent
+                          const allAgents = await api.getAgents()
+                          const agentsList = Array.isArray(allAgents) ? allAgents : (allAgents as any)?.agents || []
+                          const autoAgent = agentsList.find((a: any) => {
+                            try {
+                              const modes = typeof a.modes === 'string' ? JSON.parse(a.modes) : a.modes
+                              return Array.isArray(modes) && modes.includes('auto')
+                            } catch { return false }
+                          })
+                          if (autoAgent) {
+                            await api.assignAgent({ agentId: autoAgent.id, chatId, triggerMode: 'auto' })
+                          }
+                        }
+                        loadStrategy()
+                      } catch (err) {
+                        console.error('Autopilot toggle error:', err)
+                      }
+                    }}
+                  >
                     <div className="flex-1">
                       <div className="text-sm text-text-primary">
                         {agentConfig ? 'Включен' : 'Выключен'}

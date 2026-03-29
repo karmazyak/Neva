@@ -462,8 +462,43 @@ export const consentRequests = sqliteTable('consent_requests', {
   context: text('context').notNull(),
   status: text('status', { enum: ['pending', 'approved', 'denied', 'expired'] }).notNull().default('pending'),
   responseMessage: text('response_message'),
+  dialogId: text('dialog_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
   expiresAt: integer('expires_at', { mode: 'timestamp' }),
+})
+
+// ── Agent Dialogs (A2A inter-user agent communication) ───────────────────────
+
+export const agentDialogs = sqliteTable('agent_dialogs', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  initiatorUserId: text('initiator_user_id').notNull().references(() => users.id),
+  targetUserId: text('target_user_id').notNull().references(() => users.id),
+  type: text('type', { enum: ['whos_free', 'get_interests', 'match_proposal', 'consent', 'gather'] }).notNull(),
+  status: text('status', { enum: ['pending', 'auto_approved', 'approved', 'denied', 'expired', 'cancelled'] }).notNull().default('pending'),
+  contextData: text('context_data', { mode: 'json' }).$type<Record<string, any>>(),
+  result: text('result', { mode: 'json' }).$type<Record<string, any>>(),
+  parentDialogId: text('parent_dialog_id'),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+export const agentDialogMessages = sqliteTable('agent_dialog_messages', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  dialogId: text('dialog_id').notNull().references(() => agentDialogs.id),
+  agentRole: text('agent_role', { enum: ['initiator', 'target'] }).notNull(),
+  content: text('content').notNull(),
+  metadata: text('metadata', { mode: 'json' }).$type<Record<string, any>>(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+export const agentAutonomyRules = sqliteTable('agent_autonomy_rules', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  relationshipLevel: text('relationship_level', { enum: ['close', 'friend', 'acquaintance'] }).notNull(),
+  dialogType: text('dialog_type', { enum: ['whos_free', 'get_interests', 'match_proposal', 'consent', '*'] }).notNull(),
+  action: text('action', { enum: ['auto_approve', 'auto_deny', 'ask_user'] }).notNull().default('ask_user'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
 })
 
 // ── A2A Protocol: Tasks & External Apps ─────────────────────────────────────
@@ -487,8 +522,27 @@ export const a2aApps = sqliteTable('a2a_apps', {
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
 })
 
+// ── Agent Activities (Activity Feed) ─────────────────────────────────────────
+
+export const agentActivities = sqliteTable('agent_activities', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  type: text('type').notNull(), // 'auto_response' | 'gather_started' | 'gather_result' | 'nudge' | 'match_found' | 'mood_alert' | 'undo'
+  title: text('title').notNull(),
+  body: text('body'),
+  relatedDialogId: text('related_dialog_id'),
+  relatedChatId: text('related_chat_id'),
+  relatedUserId: text('related_user_id'),
+  metadata: text('metadata', { mode: 'json' }).$type<Record<string, any>>(),
+  undoable: integer('undoable', { mode: 'boolean' }).default(false),
+  undoneAt: integer('undone_at', { mode: 'timestamp' }),
+  undoDeadline: integer('undo_deadline', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
 // ── Type exports ────────────────────────────────────────────────────────────
 
+export type AgentActivity = typeof agentActivities.$inferSelect
 export type UserGoal = typeof userGoals.$inferSelect
 export type ProactiveAction = typeof proactiveActions.$inferSelect
 export type ContactIntelligenceRow = typeof contactIntelligence.$inferSelect
@@ -499,3 +553,6 @@ export type Match = typeof matches.$inferSelect
 export type ConsentRequest = typeof consentRequests.$inferSelect
 export type A2ATask = typeof a2aTasks.$inferSelect
 export type A2AApp = typeof a2aApps.$inferSelect
+export type AgentDialog = typeof agentDialogs.$inferSelect
+export type AgentDialogMessage = typeof agentDialogMessages.$inferSelect
+export type AgentAutonomyRule = typeof agentAutonomyRules.$inferSelect

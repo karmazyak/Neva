@@ -5,7 +5,8 @@ import { eq, and, or, desc, sql } from 'drizzle-orm'
 import { authMiddleware } from '../middleware/auth'
 import { generateEmbedding } from '../ai/embeddings'
 import { findMatchingOffers, calculateTrustScore, getSocialDistance, getDirectContacts } from '../ai/matching'
-import { requestConsent, getPendingConsents, handleConsentResponse, getRelationshipLevel } from '../ai/consent'
+import { requestConsentAsync, getPendingConsents, handleConsentResponse, getRelationshipLevel } from '../ai/consent'
+import { handleMatchProposal } from '../a2a/agent-skills-internal'
 import { chatCompletion } from '../ai/openrouter'
 import { getModelConfig } from '../ai/model-router'
 import { sendToUser } from '../ws'
@@ -178,14 +179,20 @@ app.post('/match/:needId', async (c) => {
   if (!need) return c.json({ error: 'Need not found' }, 404)
   if (need.status !== 'active') return c.json({ error: 'Need is not active' }, 400)
 
-  const candidates = await findMatchingOffers(
-    need.id,
-    need.userId,
-    need.description,
-    need.embedding as number[] | null,
-    need.category,
-    need.visibility as Visibility,
-  )
+  let candidates: Awaited<ReturnType<typeof findMatchingOffers>>
+  try {
+    candidates = await findMatchingOffers(
+      need.id,
+      need.userId,
+      need.description,
+      need.embedding as number[] | null,
+      need.category,
+      need.visibility as Visibility,
+    )
+  } catch (e) {
+    console.error('[NETWORK] Match failed:', e)
+    return c.json({ matches: [], error: 'Matching failed' })
+  }
 
   if (candidates.length === 0) {
     return c.json({ matches: [], message: 'No matching offers found' })
@@ -223,47 +230,14 @@ app.post('/match/:needId/propose/:offerId', async (c) => {
   const offer = db.select().from(schema.offers).where(eq(schema.offers.id, offerId)).get()
   if (!offer) return c.json({ error: 'Offer not found' }, 404)
 
-  // Create match record
-  const matchId = crypto.randomUUID()
-  const { distance, via } = getSocialDistance(userId, offer.userId)
+  // Use A2A dialog system for match proposal
+  const result = await handleMatchProposal(userId, offer.userId, needId, offerId, need.description)
 
-  db.insert(schema.matches).values({
-    id: matchId,
-    needId,
-    offerId,
-    requesterId: userId,
-    providerId: offer.userId,
-    similarityScore: 0,
-    socialDistance: distance,
-    mutualContactId: via || null,
-    status: 'proposed',
-  }).run()
-
-  // Send consent request to provider
-  const requester = db.select({ displayName: schema.users.displayName })
-    .from(schema.users).where(eq(schema.users.id, userId)).get()
-
-  const context = via
-    ? `Знакомый ${requester?.displayName || 'кого-то'} ищет: ${need.description}. Предложить тебя?`
-    : `${requester?.displayName || 'Пользователь'} ищет: ${need.description}. Предложить тебя?`
-
-  // Fire and forget — consent response updates match status
-  requestConsent(userId, offer.userId, 'match_offer', context, 86400000).then(result => {
-    db.update(schema.matches)
-      .set({ status: result.approved ? 'accepted' : 'declined' })
-      .where(eq(schema.matches.id, matchId))
-      .run()
-
-    // Notify requester
-    sendToUser(userId, {
-      type: 'match_update',
-      matchId,
-      status: result.approved ? 'accepted' : 'declined',
-      providerMessage: result.message,
-    })
+  return c.json({
+    matchId: result.matchId,
+    dialogId: result.dialogId,
+    status: result.autoResolved ? 'auto_resolved' : 'proposed',
   })
-
-  return c.json({ matchId, status: 'proposed' })
 })
 
 // ── Matches list ────────────────────────────────────────────────────────────
@@ -358,7 +332,11 @@ app.get('/trust/:userId', (c) => {
   })
 })
 
-// ── Who's free? (mass consent request) ──────────────────────────────────────
+// ── Who's free? (via A2A agent dialogs) ──────────────────────────────────────
+// Now uses the agent dialog system. Returns immediately, results stream via WebSocket.
+// The new endpoint is at /api/agent/whos-free. This is kept for backward compat.
+
+import { handleWhosFree } from '../a2a/agent-skills-internal'
 
 const whosFreeSchema = z.object({
   context: z.string().min(2).max(300),
@@ -372,51 +350,13 @@ app.post('/whos-free', async (c) => {
   if (!parsed.success) return c.json({ error: 'Invalid input' }, 400)
 
   const { context, timeoutMinutes } = parsed.data
-  const timeoutMs = timeoutMinutes * 60000
+  const result = await handleWhosFree(userId, context, timeoutMinutes * 60000)
 
-  // Get friends (not acquaintances)
-  const contacts = getDirectContacts(userId)
-  const friends = contacts.filter(contactId => {
-    const level = getRelationshipLevel(userId, contactId)
-    return level === 'friend' || level === 'close'
-  })
-
-  if (friends.length === 0) {
-    return c.json({ message: 'No friends found to ask', responses: [] })
-  }
-
-  // Send consent requests to all friends in parallel
-  const promises = friends.map(friendId =>
-    requestConsent(userId, friendId, 'availability', context, timeoutMs)
-      .then(result => {
-        const user = db.select({ displayName: schema.users.displayName })
-          .from(schema.users).where(eq(schema.users.id, friendId)).get()
-        return {
-          userId: friendId,
-          displayName: user?.displayName || 'Unknown',
-          available: result.approved,
-          message: result.message,
-          expired: result.expired || false,
-        }
-      })
-  )
-
-  // Return immediately with pending status, results come via WebSocket
-  // But also race with a short initial timeout for quick responses
-  const quickResults = await Promise.race([
-    Promise.all(promises),
-    new Promise<null>(resolve => setTimeout(() => resolve(null), 10000)), // 10s initial wait
-  ])
-
-  if (quickResults) {
-    return c.json({ responses: quickResults, complete: true })
-  }
-
-  // If not all responded in 10s, return what we have and let WS handle the rest
   return c.json({
-    message: `Asking ${friends.length} friends. Results will arrive via notifications.`,
-    friendsAsked: friends.length,
-    complete: false,
+    dialogId: result.parentDialogId,
+    friendsAsked: result.friendsAsked,
+    status: 'active',
+    message: `Опрашиваю ${result.friendsAsked} друзей. Результаты придут через уведомления.`,
   })
 })
 

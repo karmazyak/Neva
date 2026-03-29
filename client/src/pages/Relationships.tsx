@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useChatStore } from '../stores/chatStore'
+import { useAgentDialogStore } from '../stores/agentDialogStore'
+import AgentDialogPanel from '../components/agent/AgentDialogPanel'
+import AgentAutonomySettings from '../components/agent/AgentAutonomySettings'
 import {
-  ArrowLeft,
-  Heart,
   Search,
   Loader2,
   Target,
@@ -16,10 +17,8 @@ import {
   Brain,
   Lightbulb,
   Flame,
-  Calendar,
   Bookmark,
   MessageSquare,
-  Clock,
   Plus,
   Trash2,
   Play,
@@ -27,16 +26,25 @@ import {
   CheckCircle,
   ChevronLeft,
   Sparkles,
-  Edit3,
   RefreshCw,
   X,
-  Globe,
-  Link,
+  Users,
+  Bell,
+  Settings,
+  Send,
+  Heart,
+  AlertTriangle,
+  Shield,
 } from 'lucide-react'
 import NetworkSheet from '../components/network/NetworkSheet'
 import NetworkSection from '../components/network/NetworkSection'
 import GiftIdeas from '../components/network/GiftIdeas'
+import WhosFreeResults from '../components/agent/WhosFreeResults'
+import FindPersonSheet from '../components/network/FindPersonSheet'
+import AgentHub from '../components/agent/AgentHub'
 import { useNetworkStore } from '../stores/networkStore'
+
+// ── Types ──────────────────────────────────────────────────────────────────
 
 interface ContactOverview {
   chatId: string
@@ -63,6 +71,20 @@ interface ContactDetail {
   proactiveActions: any[]
 }
 
+interface ProactiveAction {
+  id: string
+  chatId: string
+  chatName?: string
+  title: string
+  body: string
+  draftMessage?: string
+  type: string
+  trigger: string
+  metadata?: Record<string, any>
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────
+
 const REL_COLORS: Record<string, string> = {
   family: 'bg-pink-500/15 text-pink-400',
   friend: 'bg-green-500/15 text-green-400',
@@ -77,12 +99,65 @@ const MOOD_EMOJI: Record<string, string> = {
   happy: '😊', normal: '😐', seems_off: '😟', stressed: '😰',
 }
 
+// ── Proactive helpers ──────────────────────────────────────────────────────
+
+const triggerIcon = (trigger: string) => {
+  switch (trigger) {
+    case 'silence': return <Heart size={16} className="text-pink-400" />
+    case 'unanswered': return <MessageSquare size={16} className="text-amber-400" />
+    case 'goal_stall': return <Target size={16} className="text-purple-400" />
+    case 'burst': return <AlertTriangle size={16} className="text-red-400" />
+    case 'mood': return <Heart size={16} className="text-pink-400" />
+    case 'detected_need': return <Search size={16} className="text-cyan-400" />
+    case 'fraud_suspicion': return <Shield size={16} className="text-red-400" />
+    case 'consent_request': return <Users size={16} className="text-blue-400" />
+    default: return <Sparkles size={16} className="text-accent" />
+  }
+}
+
+const triggerColor = (trigger: string) => {
+  switch (trigger) {
+    case 'silence': return 'border-pink-500/20 bg-pink-500/5'
+    case 'unanswered': return 'border-amber-500/20 bg-amber-500/5'
+    case 'goal_stall': return 'border-purple-500/20 bg-purple-500/5'
+    case 'burst': return 'border-red-500/20 bg-red-500/5'
+    case 'detected_need': return 'border-cyan-500/20 bg-cyan-500/5'
+    case 'fraud_suspicion': return 'border-red-500/20 bg-red-500/5'
+    case 'consent_request': return 'border-blue-500/20 bg-blue-500/5'
+    default: return 'border-accent/20 bg-accent/5'
+  }
+}
+
+const actionLabel = (action: ProactiveAction) => {
+  switch (action.trigger) {
+    case 'detected_need': return 'Да, поищи'
+    case 'fraud_suspicion': return 'Заблокировать'
+    case 'consent_request': return 'Разрешить'
+    default: return action.draftMessage ? 'Открыть чат' : 'Перейти'
+  }
+}
+
+const dismissLabel = (trigger: string) => {
+  switch (trigger) {
+    case 'fraud_suspicion': return 'Это знакомый'
+    case 'consent_request': return 'Отклонить'
+    default: return 'Не сейчас'
+  }
+}
+
+// ── Component ──────────────────────────────────────────────────────────────
+
 export default function Relationships() {
   const navigate = useNavigate()
   const { setActiveChat } = useChatStore()
+  const { pendingCount, requestWhosFree, requestGetInterests, activeWhosFreeSession, setActiveWhosFreeSession } = useAgentDialogStore()
+
+  // Contact list state
   const [contacts, setContacts] = useState<ContactOverview[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+
+  // Detail view state
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ContactDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -95,9 +170,80 @@ export default function Relationships() {
   const [newGoalText, setNewGoalText] = useState('')
   const [showNewGoal, setShowNewGoal] = useState(false)
 
+  // Agent inbox & settings panels
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false)
+  const [autonomyOpen, setAutonomyOpen] = useState(false)
+
+  // Quick action: "Who's free?"
+  const [whosFreeExpanded, setWhosFreeExpanded] = useState(false)
+  const [whosFreeText, setWhosFreeText] = useState('')
+  const [whosFreeLoading, setWhosFreeLoading] = useState(false)
+
+  // Proactive actions (inline)
+  const [proactiveActions, setProactiveActions] = useState<ProactiveAction[]>([])
+
+  // ── Load contacts on mount ──
   useEffect(() => {
     loadContacts()
+    loadProactiveActions()
   }, [])
+
+  // ── WebSocket listeners for proactive events ──
+  useEffect(() => {
+    const onProactive = (e: CustomEvent) => {
+      const action = e.detail?.action
+      if (action) {
+        setProactiveActions(prev => {
+          if (prev.some(a => a.id === action.id)) return prev
+          return [action, ...prev]
+        })
+      }
+    }
+    const onConsent = (e: CustomEvent) => {
+      const req = e.detail
+      if (req) {
+        const action: ProactiveAction = {
+          id: `consent-${req.requestId}`,
+          chatId: '',
+          title: `${req.fromName || 'Кто-то'} спрашивает`,
+          body: req.context || 'Запрос на доступ к данным',
+          type: 'consent',
+          trigger: 'consent_request',
+          metadata: { requestId: req.requestId },
+        }
+        setProactiveActions(prev => {
+          if (prev.some(a => a.id === action.id)) return prev
+          return [action, ...prev]
+        })
+      }
+    }
+    const onFraud = (e: CustomEvent) => {
+      const alert = e.detail
+      if (alert) {
+        const action: ProactiveAction = {
+          id: `fraud-${Date.now()}`,
+          chatId: alert.chatId || '',
+          chatName: alert.chatName,
+          title: 'Подозрительное сообщение',
+          body: `Обнаружены признаки мошенничества: ${(alert.signals || []).map((s: any) => s.category).join(', ')}`,
+          type: 'fraud',
+          trigger: 'fraud_suspicion',
+        }
+        setProactiveActions(prev => [action, ...prev])
+      }
+    }
+
+    window.addEventListener('proactive_action' as any, onProactive)
+    window.addEventListener('consent_request' as any, onConsent)
+    window.addEventListener('fraud_alert' as any, onFraud)
+    return () => {
+      window.removeEventListener('proactive_action' as any, onProactive)
+      window.removeEventListener('consent_request' as any, onConsent)
+      window.removeEventListener('fraud_alert' as any, onFraud)
+    }
+  }, [])
+
+  // ── Data loaders ──
 
   const loadContacts = async () => {
     setLoading(true)
@@ -105,6 +251,13 @@ export default function Relationships() {
       const res = await api.getContactsOverview()
       setContacts(res.contacts || [])
     } catch {} finally { setLoading(false) }
+  }
+
+  const loadProactiveActions = async () => {
+    try {
+      const data = await api.getProactiveActions()
+      setProactiveActions(data.actions || [])
+    } catch {}
   }
 
   const loadDetail = async (chatId: string) => {
@@ -116,7 +269,6 @@ export default function Relationships() {
     try {
       const res = await api.getContactSummary(chatId)
       setDetail(res.contact)
-      // Load insights and desires in parallel
       loadInsights(chatId)
       loadDesires(chatId)
     } catch {} finally { setDetailLoading(false) }
@@ -158,6 +310,67 @@ export default function Relationships() {
     navigate('/')
   }
 
+  // ── Proactive action handlers ──
+
+  const handleProactiveAct = async (action: ProactiveAction) => {
+    if (action.trigger === 'detected_need') {
+      useNetworkStore.getState().setSheetOpen(true)
+      setProactiveActions(prev => prev.filter(a => a.id !== action.id))
+      try { await api.actOnProactiveAction(action.id, 'acted') } catch {}
+      return
+    }
+    if (action.trigger === 'consent_request' && action.metadata?.requestId) {
+      try { await api.respondConsent(action.metadata.requestId, true) } catch {}
+      setProactiveActions(prev => prev.filter(a => a.id !== action.id))
+      return
+    }
+    if (action.chatId) {
+      setActiveChat(action.chatId)
+    }
+    try { await api.actOnProactiveAction(action.id, 'acted') } catch {}
+    setProactiveActions(prev => prev.filter(a => a.id !== action.id))
+  }
+
+  const handleProactiveDismiss = async (action: ProactiveAction) => {
+    if (action.trigger === 'consent_request' && action.metadata?.requestId) {
+      try { await api.respondConsent(action.metadata.requestId, false) } catch {}
+      setProactiveActions(prev => prev.filter(a => a.id !== action.id))
+      return
+    }
+    try { await api.actOnProactiveAction(action.id, 'dismissed') } catch {}
+    setProactiveActions(prev => prev.filter(a => a.id !== action.id))
+  }
+
+  // ── Who's free handler ──
+
+  const handleWhosFree = async () => {
+    if (!whosFreeText.trim() || whosFreeLoading) return
+    setWhosFreeLoading(true)
+    try {
+      await requestWhosFree(whosFreeText.trim())
+      setWhosFreeText('')
+      setWhosFreeExpanded(false)
+    } catch {} finally { setWhosFreeLoading(false) }
+  }
+
+  // ── Get interests for a contact in detail view ──
+
+  const handleGetInterests = async () => {
+    if (!detail) return
+    // Find the target user ID from chat members
+    const chats = useChatStore.getState().chats
+    const chat = chats.find(c => c.id === detail.chatId)
+    if (chat?.members?.length) {
+      const other = chat.members.find((m: any) => m.login !== 'ivan') || chat.members[0]
+      if (other?.id) {
+        try {
+          await requestGetInterests(other.id)
+          setAgentPanelOpen(true)
+        } catch {}
+      }
+    }
+  }
+
   const filtered = contacts.filter(c =>
     !search || c.name?.toLowerCase().includes(search.toLowerCase())
   )
@@ -170,7 +383,10 @@ export default function Relationships() {
     }
   }
 
-  // ── Detail View ──
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── DETAIL VIEW ──
+  // ═══════════════════════════════════════════════════════════════════════════
+
   if (selectedChatId && (detail || detailLoading)) {
     return (
       <div className="h-screen bg-bg-primary flex flex-col">
@@ -195,15 +411,22 @@ export default function Relationships() {
                   )}
                 </div>
               </div>
-              <button
-                onClick={() => handleOpenChat(detail.chatId)}
-                className="text-xs text-accent bg-accent/10 hover:bg-accent/15 px-3 py-1.5 rounded-full transition-colors"
-              >
-                Открыть чат
-              </button>
             </>
           )}
         </div>
+
+        {/* Quick action: open chat */}
+        {detail && (
+          <div className="px-4 py-2 bg-bg-secondary border-b border-border">
+            <button
+              onClick={() => handleOpenChat(detail.chatId)}
+              className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-accent/10 hover:bg-accent/15 text-accent text-sm font-medium transition-colors"
+            >
+              <MessageSquare size={15} />
+              Открыть чат
+            </button>
+          </div>
+        )}
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
@@ -491,32 +714,121 @@ export default function Relationships() {
             </div>
           ) : null}
         </div>
+
+        {/* Agent Dialog Panel (overlay) */}
+        <AgentDialogPanel open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
       </div>
     )
   }
 
-  // ── Grid View ──
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ── GRID VIEW ──
+  // ═══════════════════════════════════════════════════════════════════════════
+
   return (
     <div className="h-screen bg-bg-primary flex flex-col">
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 bg-bg-secondary border-b border-border">
-        <button onClick={() => navigate('/')} className="p-1.5 rounded-full hover:bg-bg-hover text-text-secondary">
-          <ArrowLeft size={22} />
+        <button
+          onClick={() => navigate('/')}
+          className="hidden md:flex p-1.5 rounded-full hover:bg-bg-hover text-text-secondary"
+          title="Назад к чатам"
+        >
+          <ChevronLeft size={20} />
         </button>
-        <Heart size={20} className="text-pink-400" />
-        <h1 className="font-semibold text-text-primary text-lg">Мои отношения</h1>
+        <Users size={20} className="text-accent md:hidden" />
+        <h1 className="font-semibold text-text-primary text-lg">Люди</h1>
         <div className="flex-1" />
         <button
-          onClick={() => useNetworkStore.getState().setSheetOpen(true)}
-          className="p-1.5 rounded-full hover:bg-bg-hover text-accent relative"
-          title="Моя сеть"
+          onClick={() => setAgentPanelOpen(true)}
+          className="p-1.5 rounded-full hover:bg-bg-hover text-text-secondary relative"
+          title="Входящие агента"
         >
-          <Globe size={18} />
+          <Bell size={18} />
+          {pendingCount > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full px-1">
+              {pendingCount}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setAutonomyOpen(true)}
+          className="p-1.5 rounded-full hover:bg-bg-hover text-text-secondary"
+          title="Настройки автономности"
+        >
+          <Settings size={18} />
         </button>
         <button onClick={loadContacts} className="p-1.5 rounded-full hover:bg-bg-hover text-text-secondary">
           <RefreshCw size={18} />
         </button>
       </div>
+
+      {/* Agent Hub: Quick Actions + Activity Feed + Gather Flow */}
+      <div className="pt-3 pb-1">
+        <AgentHub findPersonSlot={<FindPersonSheet />} />
+      </div>
+
+      {/* "Требуют внимания" — inline proactive nudges */}
+      {proactiveActions.length > 0 && (
+        <div className="px-4 pt-2 pb-1 space-y-2">
+          <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider flex items-center gap-1.5">
+            <Sparkles size={12} className="text-amber-400" />
+            Требуют внимания
+          </h3>
+          {proactiveActions.slice(0, 3).map((action) => (
+            <div
+              key={action.id}
+              className={`border rounded-xl p-3 ${triggerColor(action.trigger)}`}
+            >
+              <div className="flex items-start gap-2.5">
+                <div className="mt-0.5 flex-shrink-0">
+                  {triggerIcon(action.trigger)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="text-sm font-medium text-text-primary truncate">{action.title}</h4>
+                    <button
+                      onClick={() => handleProactiveDismiss(action)}
+                      className="p-0.5 rounded-full hover:bg-white/10 text-text-secondary flex-shrink-0"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <p className="text-xs text-text-secondary mt-0.5 leading-relaxed">{action.body}</p>
+
+                  {action.draftMessage && (
+                    <div className="mt-2 bg-bg-primary/50 rounded-lg px-2.5 py-1.5 text-xs text-text-primary italic">
+                      "{action.draftMessage}"
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 mt-2.5">
+                    <button
+                      onClick={() => handleProactiveAct(action)}
+                      className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                        action.trigger === 'fraud_suspicion'
+                          ? 'bg-red-500/20 hover:bg-red-500/30 text-red-400'
+                          : action.trigger === 'consent_request'
+                          ? 'bg-blue-500/20 hover:bg-blue-500/30 text-blue-400'
+                          : 'bg-accent/20 hover:bg-accent/30 text-accent'
+                      }`}
+                    >
+                      {action.trigger === 'consent_request' ? <CheckCircle size={12} /> : <Send size={12} />}
+                      {actionLabel(action)}
+                    </button>
+                    <button
+                      onClick={() => handleProactiveDismiss(action)}
+                      className="px-3 py-1.5 text-text-secondary hover:text-text-primary text-xs transition-colors"
+                    >
+                      {dismissLabel(action.trigger)}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Search */}
       <div className="px-4 py-2">
@@ -532,7 +844,7 @@ export default function Relationships() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* Contact Grid */}
       <div className="flex-1 overflow-y-auto px-4 pb-20">
         {loading ? (
           <div className="flex items-center justify-center py-12">
@@ -541,7 +853,7 @@ export default function Relationships() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12">
-            <Heart size={48} className="mx-auto text-text-secondary/30 mb-3" />
+            <Users size={48} className="mx-auto text-text-secondary/30 mb-3" />
             <p className="text-text-secondary">
               {search ? 'Никого не найдено' : 'Нет данных о контактах. Начните общаться!'}
             </p>
@@ -604,7 +916,43 @@ export default function Relationships() {
           </div>
         )}
       </div>
+
+      {/* Who's Free Results Sheet */}
+      {activeWhosFreeSession && (
+        <WhosFreeResults
+          dialogId={activeWhosFreeSession.dialogId}
+          intentText={activeWhosFreeSession.intentText}
+          friendsAsked={activeWhosFreeSession.friendsAsked}
+          onClose={() => setActiveWhosFreeSession(null)}
+        />
+      )}
+
+      {/* Modals / Overlays */}
       <NetworkSheet />
+      <AgentDialogPanel open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
+
+      {/* Autonomy Settings Modal */}
+      {autonomyOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center" onClick={() => setAutonomyOpen(false)}>
+          <div
+            className="w-full max-w-md bg-bg-secondary rounded-2xl border border-border shadow-xl max-h-[80vh] flex flex-col overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <h2 className="font-semibold text-text-primary flex items-center gap-2">
+                <Settings size={16} className="text-accent" />
+                Автономность агента
+              </h2>
+              <button onClick={() => setAutonomyOpen(false)} className="p-1 rounded-full hover:bg-bg-hover text-text-secondary">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <AgentAutonomySettings />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

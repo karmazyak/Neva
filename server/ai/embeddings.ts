@@ -6,7 +6,9 @@ const API_KEY = OPENAI_API_KEY || OPENROUTER_API_KEY
 const BASE_URL = OPENAI_API_KEY
   ? 'https://api.openai.com/v1'
   : 'https://openrouter.ai/api/v1'
-const EMBEDDING_MODEL = 'openai/text-embedding-3-small'
+const EMBEDDING_MODEL = OPENAI_API_KEY
+  ? 'text-embedding-3-small'
+  : 'openai/text-embedding-3-small'
 
 if (!API_KEY) {
   console.warn('[EMBEDDINGS] WARNING: No API key set for embeddings. Set OPENAI_API_KEY or OPENROUTER_API_KEY.')

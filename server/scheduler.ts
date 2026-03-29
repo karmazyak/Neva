@@ -8,6 +8,7 @@ import { sendToUser, broadcastToChat } from './ws'
 import { sql } from 'drizzle-orm'
 import { encrypt, decrypt } from './security/encryption'
 import { runProactiveScan } from './ai/proactive-engine'
+import { checkExpiredDialogs } from './a2a/agent-dialog'
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null
 let proactiveInterval: ReturnType<typeof setInterval> | null = null
@@ -28,6 +29,8 @@ export function startScheduler() {
 
   proactiveInterval = setInterval(() => {
     runProactiveScan().catch(err => console.error('Proactive scan error:', err))
+    // Check expired agent dialogs
+    try { checkExpiredDialogs() } catch (err) { console.error('Dialog expiry check error:', err) }
   }, 15 * 60 * 1000) // every 15 minutes
 }
 

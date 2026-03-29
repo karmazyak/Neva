@@ -6,7 +6,6 @@ import ChatWindow from '../components/chat/ChatWindow'
 import Sidebar from '../components/Sidebar'
 import NewChatModal from '../components/chat/NewChatModal'
 import ContextPanel from '../components/chat/ContextPanel'
-import MorningBriefing from '../components/chat/MorningBriefing'
 import NevaLogo from '../components/NevaLogo'
 
 export default function Chats() {
@@ -37,7 +36,6 @@ export default function Chats() {
           activeChat ? 'hidden md:flex' : 'flex'
         } flex-col w-full md:w-[420px] md:min-w-[340px] border-r border-border bg-bg-secondary`}
       >
-        <MorningBriefing />
         <ChatList
           onMenuClick={() => setSidebarOpen(true)}
           onNewChat={() => setShowNewChat(true)}

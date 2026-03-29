@@ -211,6 +211,49 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_consent_from ON consent_requests(from_user_id);
 `)
 
+// Add dialog_id column to consent_requests
+try { sqlite.exec('ALTER TABLE consent_requests ADD COLUMN dialog_id TEXT') } catch {}
+
+// ── Agent Dialogs (A2A inter-user) ──────────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS agent_dialogs (
+    id TEXT PRIMARY KEY,
+    initiator_user_id TEXT NOT NULL REFERENCES users(id),
+    target_user_id TEXT NOT NULL REFERENCES users(id),
+    type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    context_data TEXT,
+    result TEXT,
+    parent_dialog_id TEXT,
+    expires_at INTEGER,
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_dialogs_initiator ON agent_dialogs(initiator_user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_agent_dialogs_target ON agent_dialogs(target_user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_agent_dialogs_parent ON agent_dialogs(parent_dialog_id);
+
+  CREATE TABLE IF NOT EXISTS agent_dialog_messages (
+    id TEXT PRIMARY KEY,
+    dialog_id TEXT NOT NULL REFERENCES agent_dialogs(id),
+    agent_role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata TEXT,
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_dialog_msgs_dialog ON agent_dialog_messages(dialog_id);
+
+  CREATE TABLE IF NOT EXISTS agent_autonomy_rules (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    relationship_level TEXT NOT NULL,
+    dialog_type TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT 'ask_user',
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_autonomy_unique ON agent_autonomy_rules(user_id, relationship_level, dialog_type);
+`)
+
 // ── A2A Protocol tables ─────────────────────────────────────────────────────
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS a2a_tasks (
@@ -233,4 +276,23 @@ sqlite.exec(`
     active INTEGER DEFAULT 1,
     created_at INTEGER DEFAULT (unixepoch())
   );
+
+  CREATE TABLE IF NOT EXISTS agent_activities (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    related_dialog_id TEXT,
+    related_chat_id TEXT,
+    related_user_id TEXT,
+    metadata TEXT,
+    undoable INTEGER DEFAULT 0,
+    undone_at INTEGER,
+    undo_deadline INTEGER,
+    created_at INTEGER DEFAULT (unixepoch()),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_activities_user_created ON agent_activities(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_activities_user_type ON agent_activities(user_id, type);
 `)

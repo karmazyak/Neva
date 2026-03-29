@@ -1,5 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useChatStore } from '../stores/chatStore'
+import { useAgentDialogStore } from '../stores/agentDialogStore'
+import { useAgentHubStore } from '../stores/agentHubStore'
 import { showToast } from '../components/ui/Toast'
 import { useNotifications } from './useNotifications'
 
@@ -153,6 +155,44 @@ export function useWebSocket(token: string | null) {
             case 'fraud_alert':
               // Dispatch for ProactiveCard fraud warning
               window.dispatchEvent(new CustomEvent('fraud_alert', { detail: data }))
+              break
+
+            case 'agent_dialog_request':
+              useAgentDialogStore.getState().handleDialogRequest(data)
+              useAgentHubStore.getState().handleDialogRequest(data)
+              window.dispatchEvent(new CustomEvent('agent_dialog_request', { detail: data }))
+              showToast('info', `🤖 ${data.dialog?.initiatorName || 'Агент'}: ${data.dialog?.message?.slice(0, 60) || 'новый запрос'}`)
+              break
+
+            case 'agent_dialog_update':
+              useAgentDialogStore.getState().handleDialogUpdate(data)
+              window.dispatchEvent(new CustomEvent('agent_dialog_update', { detail: data }))
+              break
+
+            case 'agent_dialog_auto':
+              useAgentDialogStore.getState().handleDialogAuto(data)
+              useAgentHubStore.getState().handleDialogAuto(data)
+              showToast('info', `🤖 ${data.message || 'Ваш агент обработал запрос автоматически'}`)
+              break
+
+            case 'agent_activity':
+              useAgentHubStore.getState().handleActivity(data)
+              break
+
+            case 'agent_activity_undone':
+              useAgentHubStore.getState().handleActivityUndone(data)
+              break
+
+            case 'gather_progress':
+              useAgentHubStore.getState().handleGatherProgress(data)
+              break
+
+            case 'gather_plan_ready':
+              useAgentHubStore.getState().handleGatherPlanReady(data)
+              break
+
+            case 'gather_complete':
+              useAgentHubStore.getState().handleGatherComplete(data)
               break
 
             case 'mention':
