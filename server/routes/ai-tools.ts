@@ -104,7 +104,7 @@ const transformSchema = z.object({
 
 const TRANSFORM_PROMPTS: Record<string, string> = {
   formal: 'Rewrite the following text in a more formal, professional tone. CRITICAL: Keep the SAME LANGUAGE as the input — if the input is in Russian, output must be in Russian; if in English, output in English. Keep the same meaning. Output ONLY the rewritten text, nothing else.',
-  casual: 'Rewrite the following text in a casual, friendly tone. CRITICAL: Keep the SAME LANGUAGE as the input — if the input is in Russian, output must be in Russian; if in English, output in English. Keep the same meaning. Output ONLY the rewritten text, nothing else.',
+  casual: 'Rewrite the following text in a very casual, colloquial tone — like a message to a close friend. Use informal language, contractions, slang where appropriate. In Russian: use разговорные формы (слушай, чё, норм, кста, ну и т.д.), drop unnecessary formality (no "хотел бы", "добрый день" — use "привет", "слушай", "ну"). In English: use contractions, informal words (hey, gonna, btw, etc.). CRITICAL: Keep the SAME LANGUAGE as the input. Keep the same meaning. Output ONLY the rewritten text, nothing else.',
   shorter: 'Make the following text significantly shorter while keeping the core meaning. CRITICAL: Keep the SAME LANGUAGE as the input — do NOT translate. Output ONLY the shortened text, nothing else.',
   longer: 'Expand the following text with more detail while keeping the same tone. CRITICAL: Keep the SAME LANGUAGE as the input — do NOT translate. Output ONLY the expanded text, nothing else.',
   friendly: 'Rewrite the following text to sound warm and friendly. CRITICAL: Keep the SAME LANGUAGE as the input — do NOT translate. Keep the same meaning. Output ONLY the rewritten text, nothing else.',
@@ -417,13 +417,23 @@ If a category is empty, use an empty array. Be concise.`
       return c.json({ result: result.trim(), type: 'answer' })
     }
 
-    // Try to parse as JSON
+    // Try to parse as JSON (clean markdown wrapping if present)
     try {
-      const parsed = JSON.parse(result)
+      const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
+      const parsed = JSON.parse(cleaned)
       // Cache the analysis
       contextCache.set(chatId, { analysis: parsed, messageCount: currentMsgCount, timestamp: Date.now() })
       return c.json({ result: parsed, type: 'analysis', cached: false })
     } catch {
+      // Try to extract JSON from the response text
+      const jsonMatch = result.match(/\{[\s\S]*\}/)
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0])
+          contextCache.set(chatId, { analysis: parsed, messageCount: currentMsgCount, timestamp: Date.now() })
+          return c.json({ result: parsed, type: 'analysis', cached: false })
+        } catch {}
+      }
       const fallback = { topics: [], decisions: [], actions: [], mood: 'neutral' }
       contextCache.set(chatId, { analysis: fallback, messageCount: currentMsgCount, timestamp: Date.now() })
       return c.json({ result: fallback, type: 'analysis', cached: false })
@@ -552,8 +562,15 @@ aiTools.post('/nudges', async (c) => {
       .limit(10)
       .all()
 
-    // Resolve chat names
-    const nudges = await Promise.all(actions.map(async (a) => {
+    // Resolve chat names and filter suspicious chats
+    const suspiciousPatterns = ['fraud', 'scam', 'spam', 'фрод', 'мошен', 'спам']
+    const isSuspicious = (name: string, id: string) => {
+      const n = name.toLowerCase(), cid = id.toLowerCase()
+      if (/^\+?\d[\d\s\-()]{6,}$/.test(name.trim())) return true
+      return suspiciousPatterns.some(p => n.includes(p) || cid.includes(p))
+    }
+
+    const nudges = (await Promise.all(actions.map(async (a) => {
       let chatName = 'Chat'
       if (a.chatId) {
         const chat = db.select({ name: schema.chats.name })
@@ -562,6 +579,9 @@ aiTools.post('/nudges', async (c) => {
           .get()
         chatName = chat?.name || 'Chat'
       }
+
+      // Filter out suspicious/scam chats at read time
+      if (a.chatId && isSuspicious(chatName, a.chatId)) return null
 
       // Map trigger to priority
       const priorityMap: Record<string, string> = {
@@ -582,13 +602,22 @@ aiTools.post('/nudges', async (c) => {
         priority: (a as any).priority || priorityMap[a.trigger] || 'medium',
         draftMessage: a.draftMessage,
       }
-    }))
+    }))).filter(Boolean)
 
-    const summary = nudges.length > 0
-      ? `${nudges.length} дел требуют внимания.`
+    // Dedup: keep only the latest nudge per (chatId, trigger) pair
+    const seen = new Set<string>()
+    const dedupedNudges = nudges.filter((n: any) => {
+      const key = `${n.chatId}:${n.type}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+
+    const summary = dedupedNudges.length > 0
+      ? `${dedupedNudges.length} дел требуют внимания.`
       : null
 
-    return c.json({ nudges, summary })
+    return c.json({ nudges: dedupedNudges, summary })
   } catch (error: any) {
     return c.json({ error: error.message || 'Nudges failed' }, 500)
   }
@@ -714,7 +743,17 @@ Be concise and factual. Respond in the same language as the messages.`
     })
 
     try {
-      const parsed = JSON.parse(result)
+      const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
+      const parsed = JSON.parse(cleaned)
+
+      // Normalize personalMemory: ensure all items are {text, when, category} objects
+      if (parsed.personalMemory && Array.isArray(parsed.personalMemory)) {
+        parsed.personalMemory = parsed.personalMemory.map((m: any) => {
+          if (typeof m === 'string') return { text: m, when: '', category: 'life_event' }
+          if (typeof m === 'object' && m !== null) return { text: m.text || String(m), when: m.when || '', category: m.category || 'life_event' }
+          return { text: String(m), when: '', category: 'life_event' }
+        })
+      }
 
       // Phase 2: Persist extracted personalMemory facts to contactMemory DB
       if (parsed.personalMemory && Array.isArray(parsed.personalMemory) && otherPerson) {
@@ -837,12 +876,52 @@ Rules:
       maxTokens: 200,
     })
 
+    let parsed: any = { needsWarning: false }
     try {
-      const parsed = JSON.parse(result)
-      return c.json(parsed)
-    } catch {
-      return c.json({ needsWarning: false })
+      parsed = JSON.parse(result)
+    } catch {}
+
+    // ── Formality mismatch check (post-LLM) ──
+    // If the LLM didn't already warn, check if the message formality clashes with contact's style
+    if (!parsed.needsWarning && persona?.linguistic?.formality !== undefined) {
+      const contactFormality = persona.linguistic.formality // 0 = very casual, 1 = very formal
+      // Estimate message formality heuristically
+      const formalIndicators = [
+        /уважаем/i, /прошу/i, /предоставить/i, /соблаговолите/i, /извольте/i,
+        /в связи с/i, /настоящим/i, /довожу до/i, /ходатайств/i,
+        /добрый день/i, /с уважением/i, /коллег[аи]/i, /согласно/i,
+        /в соответствии/i, /направляю/i, /рассмотрени/i,
+        /dear\s/i, /regards/i, /kindly/i, /pursuant/i, /hereby/i,
+      ]
+      const casualIndicators = [
+        /\bхай\b/i, /\bку\b/i, /\bчё\b/i, /\bнорм\b/i, /\bваще\b/i,
+        /\bлол\b/i, /\bхах/i, /\bкста/i, /\bок\b/i, /\bнуу/i,
+        /\bhey\b/i, /\byo\b/i, /\bsup\b/i, /\blol\b/i, /\bbtw\b/i,
+        /[)]{2,}/, /[😂🤣😁😜😎]/,
+      ]
+
+      const formalScore = formalIndicators.filter(r => r.test(text)).length
+      const casualScore = casualIndicators.filter(r => r.test(text)).length
+      const msgFormality = Math.min(1, Math.max(0, 0.5 + formalScore * 0.15 - casualScore * 0.15))
+
+      const delta = msgFormality - contactFormality
+      const relType = await getRelationshipType(userId, chatId)
+
+      // Warn if formal message to very casual contact (or casual to very formal contact)
+      if (delta > 0.35 && (relType === 'friend' || relType === 'family')) {
+        parsed.needsWarning = true
+        parsed.warning = parsed.warning || 'Слишком формально для этого чата — собеседник общается проще'
+        parsed.suggestion = parsed.suggestion || null
+        parsed.formalityMismatch = true
+      } else if (delta < -0.35 && (relType === 'work' || relType === 'client')) {
+        parsed.needsWarning = true
+        parsed.warning = parsed.warning || 'Слишком неформально для делового контакта'
+        parsed.suggestion = parsed.suggestion || null
+        parsed.formalityMismatch = true
+      }
     }
+
+    return c.json(parsed)
   } catch (error: any) {
     return c.json({ needsWarning: false })
   }
@@ -995,7 +1074,17 @@ aiTools.post('/persona', async (c) => {
   try {
     // Check cache first
     const cached = getCachedPersona(chatId, userId)
-    if (cached) return c.json({ persona: cached, cached: true })
+    if (cached) {
+      // Fix stale relationshipType in cached persona by checking DB
+      const chatContext2 = '' // lazy — use detectAndCacheRelationship only if relType is 'other'
+      if (cached.dynamics.relationshipType === 'other') {
+        const freshRelType = await getRelationshipType(userId, chatId)
+        if (freshRelType && freshRelType !== 'other') {
+          cached.dynamics.relationshipType = freshRelType
+        }
+      }
+      return c.json({ persona: cached, cached: true })
+    }
 
     // Extract fresh persona
     const msgs = db.select({
@@ -1023,7 +1112,8 @@ aiTools.post('/persona', async (c) => {
       return c.json({ error: 'Not enough messages for persona extraction (need 2+)', minMessages: 2 }, 400)
     }
 
-    const relType = await getRelationshipType(userId, chatId)
+    // Use detectAndCacheRelationship (not just getRelationshipType) to auto-detect and persist
+    const relType = await detectAndCacheRelationship(userId, chatId, chatContext)
     const persona = await extractPersonaProfile(otherPerson, contactMessages, chatContext, relType)
 
     // Persist to contact-intelligence DB
@@ -1783,6 +1873,34 @@ aiTools.get('/contacts-overview', async (c) => {
       const otherPerson = members.find(m => m.userId !== userId)
       if (!otherPerson) return null // skip self-chats and bot chats
 
+      // Get relationship type from current user's row (not the other person's)
+      const myMembership = members.find(m => m.userId === userId)
+      let relType = myMembership?.relationshipType || otherPerson.relationshipType || null
+
+      // Auto-detect relationship if not yet classified (and enough messages exist)
+      if (!relType || relType === 'other') {
+        const msgCount = db.select({ count: sql<number>`count(*)` }).from(schema.messages)
+          .where(eq(schema.messages.chatId, chat.id))
+          .get()
+        if ((msgCount?.count || 0) >= 20) {
+          // Fetch recent messages for classification
+          const recentMsgs = db.select({
+            content: schema.messages.content,
+            senderId: schema.messages.senderId,
+          }).from(schema.messages)
+            .where(eq(schema.messages.chatId, chat.id))
+            .orderBy(sql`created_at DESC`)
+            .limit(30)
+            .all()
+          const chatText = recentMsgs.map(m => m.content || '').filter(Boolean).join('\n')
+          if (chatText.length > 20) {
+            try {
+              relType = await detectAndCacheRelationship(userId, chat.id, chatText)
+            } catch {}
+          }
+        }
+      }
+
       // Mood
       const latestMood = getLatestMood(userId, chat.id)
 
@@ -1812,7 +1930,7 @@ aiTools.get('/contacts-overview', async (c) => {
       return {
         chatId: chat.id,
         name: otherPerson.displayName,
-        relationshipType: otherPerson.relationshipType || null,
+        relationshipType: relType,
         mood: latestMood ? { mood: latestMood.mood, note: latestMood.note } : null,
         activeGoals: goalCount?.count || 0,
         hasAgent: !!hasAgent,

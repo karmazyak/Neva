@@ -159,9 +159,20 @@ export function persistFacts(
 
   let inserted = 0
   for (const fact of facts) {
-    // Simple dedup: skip if similar fact already exists
+    // Fuzzy dedup: skip if similar fact already exists
     const lower = fact.fact.toLowerCase()
+    // 1) Substring match
     if (existingLower.some(e => e.includes(lower) || lower.includes(e))) continue
+    // 2) Word overlap: if >70% of words match, consider duplicate
+    const newWords = new Set(lower.split(/\s+/).filter(w => w.length > 2))
+    if (newWords.size > 0 && existingLower.some(e => {
+      const existWords = new Set(e.split(/\s+/).filter(w => w.length > 2))
+      if (existWords.size === 0) return false
+      let overlap = 0
+      for (const w of newWords) if (existWords.has(w)) overlap++
+      const ratio = overlap / Math.min(newWords.size, existWords.size)
+      return ratio >= 0.7
+    })) continue
 
     const expirationDays = EXPIRATION_DAYS[fact.category]
     const expiresAt = expirationDays

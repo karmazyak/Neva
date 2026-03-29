@@ -63,19 +63,7 @@ export async function runProactiveScan() {
       if (triggers.length === 0) continue
 
       for (const trigger of triggers) {
-        // Dedup: don't create same trigger for same chat within 24 hours (any status)
-        const oneDayAgo = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000)
-        const existing = db.select({ id: schema.proactiveActions.id })
-          .from(schema.proactiveActions)
-          .where(and(
-            eq(schema.proactiveActions.userId, userId),
-            eq(schema.proactiveActions.chatId, trigger.chatId),
-            eq(schema.proactiveActions.trigger, trigger.type),
-            gt(schema.proactiveActions.createdAt, new Date(oneDayAgo * 1000)),
-          ))
-          .get()
-
-        if (existing) continue // already sent this type for this chat in last 24h
+        if (isDuplicateAction(userId, trigger.chatId, trigger.type)) continue
 
         const action = await generateAction(trigger)
         if (action) {
@@ -102,17 +90,7 @@ export async function runProactiveScanForUser(userId: string): Promise<number> {
   try {
     const triggers = await scanUserTriggers(userId)
     for (const trigger of triggers) {
-      const oneDayAgo = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000)
-      const existing = db.select({ id: schema.proactiveActions.id })
-        .from(schema.proactiveActions)
-        .where(and(
-          eq(schema.proactiveActions.userId, userId),
-          eq(schema.proactiveActions.chatId, trigger.chatId),
-          eq(schema.proactiveActions.trigger, trigger.type),
-          gt(schema.proactiveActions.createdAt, new Date(oneDayAgo * 1000)),
-        ))
-        .get()
-      if (existing) continue
+      if (isDuplicateAction(userId, trigger.chatId, trigger.type)) continue
       const ok = await generateAction(trigger)
       if (ok) actionsCreated++
     }
@@ -121,6 +99,47 @@ export async function runProactiveScanForUser(userId: string): Promise<number> {
     console.error(`[PROACTIVE] Error scanning user ${userId}:`, err)
   }
   return actionsCreated
+}
+
+/**
+ * Centralized dedup check: prevent (userId, chatId, trigger) duplicates within 24h.
+ * Uses raw SQL to avoid Drizzle timestamp mode issues.
+ */
+function isDuplicateAction(userId: string, chatId: string, triggerType: string): boolean {
+  const oneDayAgoSec = Math.floor((Date.now() - DEDUP_WINDOW) / 1000)
+  // Use raw SQL for reliable integer comparison against the created_at column
+  const existing = db.select({ id: schema.proactiveActions.id })
+    .from(schema.proactiveActions)
+    .where(and(
+      eq(schema.proactiveActions.userId, userId),
+      chatId
+        ? eq(schema.proactiveActions.chatId, chatId)
+        : sql`${schema.proactiveActions.chatId} IS NULL`,
+      eq(schema.proactiveActions.trigger, triggerType),
+      sql`${schema.proactiveActions.createdAt} > ${oneDayAgoSec}`,
+    ))
+    .get()
+  return !!existing
+}
+
+/**
+ * Detect suspicious/scam chats that should NOT receive proactive nudges.
+ * Rule-based: phone numbers as names, known scam keywords in chat ID/name.
+ */
+function isSuspiciousChat(chatName: string, chatId: string): boolean {
+  const name = chatName.toLowerCase()
+  const id = chatId.toLowerCase()
+
+  // Phone number as chat name (e.g. "+7 999 123-45-67", "+79991234567")
+  if (/^\+?\d[\d\s\-()]{6,}$/.test(chatName.trim())) return true
+
+  // Chat ID or name contains scam/fraud indicators
+  const suspiciousPatterns = ['fraud', 'scam', 'spam', 'фрод', 'мошен', 'спам']
+  for (const pat of suspiciousPatterns) {
+    if (name.includes(pat) || id.includes(pat)) return true
+  }
+
+  return false
 }
 
 /**
@@ -147,6 +166,10 @@ async function scanUserTriggers(userId: string): Promise<ProactiveTrigger[]> {
 
   for (const chat of userChats) {
     const chatName = chat.chatName || 'Chat'
+
+    // ── SCAM/FRAUD FILTER: Skip suspicious chats ──
+    if (isSuspiciousChat(chatName, chat.chatId)) continue
+
     const isPersonal = chat.relationshipType === 'family' || chat.relationshipType === 'friend'
 
     // Get last few messages
@@ -326,6 +349,9 @@ export async function quickProactiveCheck(userId: string, chatId: string, sender
 
     const chatName = chat.name || 'Chat'
 
+    // Skip suspicious/scam chats
+    if (isSuspiciousChat(chatName, chatId)) return
+
     // Check burst: 3+ messages in 2h without user reply
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
     const recentMsgs = db.select({ senderId: schema.messages.senderId })
@@ -341,19 +367,7 @@ export async function quickProactiveCheck(userId: string, chatId: string, sender
     const fromUser = recentMsgs.filter(m => m.senderId === userId).length
 
     if (fromContact >= 3 && fromUser === 0) {
-      // Dedup check
-      const oneDayAgo = new Date(Date.now() - DEDUP_WINDOW)
-      const existing = db.select({ id: schema.proactiveActions.id })
-        .from(schema.proactiveActions)
-        .where(and(
-          eq(schema.proactiveActions.userId, userId),
-          eq(schema.proactiveActions.chatId, chatId),
-          eq(schema.proactiveActions.trigger, 'burst'),
-          gt(schema.proactiveActions.createdAt, oneDayAgo),
-        ))
-        .get()
-
-      if (!existing) {
+      if (!isDuplicateAction(userId, chatId, 'burst')) {
         // Non-blocking LLM generation
         generateAction({
           userId, chatId, chatName,
@@ -384,6 +398,14 @@ async function generateAction(trigger: ProactiveTrigger): Promise<boolean> {
   }
 
   try {
+    // Get user display name for gender-correct drafts
+    const user = db.select({ displayName: schema.users.displayName })
+      .from(schema.users)
+      .where(eq(schema.users.id, trigger.userId))
+      .get()
+    const userName = user?.displayName || ''
+    const genderHint = userName ? `\nОТПРАВИТЕЛЬ сообщения — ${userName}. Используй правильный род глаголов для отправителя (${userName} — мужское имя = "не ответил", "забыл"; женское = "не ответила", "забыла").` : ''
+
     const result = await chatCompletion({
       model: config.model,
       messages: [
@@ -391,7 +413,7 @@ async function generateAction(trigger: ProactiveTrigger): Promise<boolean> {
           role: 'system',
           content: `Ты помощник который генерирует короткие проактивные уведомления для мессенджера.
 Контекст: ${trigger.context}
-Тип: ${typeLabels[trigger.type] || trigger.type}
+Тип: ${typeLabels[trigger.type] || trigger.type}${genderHint}
 
 Ответь ТОЛЬКО валидным JSON:
 {
