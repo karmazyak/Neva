@@ -195,6 +195,19 @@ export function useWebSocket(token: string | null) {
               useAgentHubStore.getState().handleGatherComplete(data)
               break
 
+            case 'gather_confirmed':
+              showToast('info', `🎉 ${data.initiatorName} подтвердил встречу: ${data.plan?.what || ''}`)
+              break
+
+            case 'intro_complete':
+              showToast('success', `🤝 Вас познакомили с ${data.targetName}!`)
+              break
+
+            case 'interest_poll_progress':
+            case 'interest_poll_complete':
+              useAgentHubStore.getState().loadActivities()
+              break
+
             case 'mention':
               if (Notification.permission === 'granted') {
                 new Notification(`${data.mentionedBy} mentioned you`, { body: data.content })

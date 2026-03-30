@@ -544,5 +544,47 @@ try {
   }
 } catch (e) { console.log('Demo goals seed skipped:', e) }
 
+// ========== A2A Network v2: Privacy Vault + Mutual Matches ==========
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS privacy_vault (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    share_interests INTEGER DEFAULT 1,
+    share_expertise INTEGER DEFAULT 1,
+    share_availability INTEGER DEFAULT 1,
+    share_mood INTEGER DEFAULT 0,
+    share_facts INTEGER DEFAULT 0,
+    public_bio TEXT,
+    public_interests TEXT DEFAULT '[]',
+    public_expertise TEXT DEFAULT '[]',
+    blocked_user_ids TEXT DEFAULT '[]',
+    updated_at INTEGER DEFAULT (unixepoch()),
+    UNIQUE(user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_privacy_vault_user ON privacy_vault(user_id);
+
+  CREATE TABLE IF NOT EXISTS mutual_matches (
+    id TEXT PRIMARY KEY,
+    need_id TEXT NOT NULL REFERENCES needs(id),
+    requester_id TEXT NOT NULL REFERENCES users(id),
+    offer_id TEXT NOT NULL REFERENCES offers(id),
+    provider_id TEXT NOT NULL REFERENCES users(id),
+    similarity_score REAL,
+    social_distance INTEGER,
+    mutual_contact_id TEXT,
+    requester_consent TEXT NOT NULL DEFAULT 'pending',
+    provider_consent TEXT NOT NULL DEFAULT 'pending',
+    requester_dialog_id TEXT,
+    provider_dialog_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    revealed_at INTEGER,
+    created_at INTEGER DEFAULT (unixepoch()),
+    expires_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_mutual_matches_requester ON mutual_matches(requester_id, status);
+  CREATE INDEX IF NOT EXISTS idx_mutual_matches_provider ON mutual_matches(provider_id, status);
+`)
+
 console.log('Database migrated successfully!')
 sqlite.close()

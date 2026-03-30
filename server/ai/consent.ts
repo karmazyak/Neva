@@ -7,8 +7,11 @@ import {
   handleWhosFreeChildResponse,
   handleMatchProposalResponse,
   handleGatherChildResponse,
+  handleInterestPollChildResponse,
+  handleMutualMatchResponse,
 } from '../a2a/agent-skills-internal'
 import { respondToDialog } from '../a2a/agent-dialog'
+import { isDisclosable, isBlockedBy } from '../a2a/privacy-vault'
 
 // ── Access Rules ────────────────────────────────────────────────────────────
 
@@ -52,6 +55,19 @@ export function checkAccess(
   fromUserId: string,
   targetUserId: string,
 ): { allowed: boolean; requiresConsent: boolean } {
+  // Privacy Vault gate: if target user blocked the caller, silently deny
+  if (isBlockedBy(targetUserId, fromUserId)) {
+    return { allowed: false, requiresConsent: false }
+  }
+
+  // Privacy Vault gate: check if target allows sharing this data type
+  const vaultDataType = dataType === 'mood_abstract' ? 'mood' : dataType
+  if (['interests', 'expertise', 'availability', 'mood', 'facts'].includes(vaultDataType)) {
+    if (!isDisclosable(targetUserId, vaultDataType as any)) {
+      return { allowed: false, requiresConsent: false }
+    }
+  }
+
   const rule = ACCESS_RULES.find(r => r.dataType === dataType)
   if (!rule) return { allowed: false, requiresConsent: false }
 
@@ -167,8 +183,32 @@ export function handleConsentResponse(
       } else {
         handleWhosFreeChildResponse(requestId, approved, message)
       }
+    } else if (dialog.type === 'get_interests') {
+      // Check if this is an interest poll child
+      const fullInterestDialog = db.select()
+        .from(schema.agentDialogs)
+        .where(eq(schema.agentDialogs.id, requestId))
+        .get()
+      const isInterestPollChild = fullInterestDialog?.contextData && (fullInterestDialog.contextData as any).isInterestPollChild
+
+      if (isInterestPollChild) {
+        handleInterestPollChildResponse(requestId, approved, message)
+      } else {
+        respondToDialog(requestId, approved, message)
+      }
     } else if (dialog.type === 'match_proposal') {
-      handleMatchProposalResponse(requestId, approved, message)
+      // Check if this is a mutual match dialog
+      const fullMatchDialog = db.select()
+        .from(schema.agentDialogs)
+        .where(eq(schema.agentDialogs.id, requestId))
+        .get()
+      const isMutualMatch = fullMatchDialog?.contextData && (fullMatchDialog.contextData as any).mutualMatchId
+
+      if (isMutualMatch) {
+        handleMutualMatchResponse(requestId, approved, message)
+      } else {
+        handleMatchProposalResponse(requestId, approved, message)
+      }
     } else {
       respondToDialog(requestId, approved, message)
     }

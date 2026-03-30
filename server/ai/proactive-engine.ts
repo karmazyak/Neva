@@ -9,6 +9,7 @@
 import { db, schema } from '../db'
 import { eq, and, desc, inArray, sql, gt, lt } from 'drizzle-orm'
 import { sendToUser } from '../ws'
+import { logAgentActivity } from '../a2a/agent-activity'
 import { decrypt } from '../security/encryption'
 import { chatCompletion } from './openrouter'
 import { getModelConfig } from './model-router'
@@ -108,13 +109,15 @@ export async function runProactiveScanForUser(userId: string): Promise<number> {
 function isDuplicateAction(userId: string, chatId: string, triggerType: string): boolean {
   const oneDayAgoSec = Math.floor((Date.now() - DEDUP_WINDOW) / 1000)
   // Use raw SQL for reliable integer comparison against the created_at column
+  // Handle both empty string and null for chatId (goal_stall triggers have chatId: '')
+  const chatIdCondition = chatId
+    ? eq(schema.proactiveActions.chatId, chatId)
+    : sql`(${schema.proactiveActions.chatId} IS NULL OR ${schema.proactiveActions.chatId} = '')`
   const existing = db.select({ id: schema.proactiveActions.id })
     .from(schema.proactiveActions)
     .where(and(
       eq(schema.proactiveActions.userId, userId),
-      chatId
-        ? eq(schema.proactiveActions.chatId, chatId)
-        : sql`${schema.proactiveActions.chatId} IS NULL`,
+      chatIdCondition,
       eq(schema.proactiveActions.trigger, triggerType),
       sql`${schema.proactiveActions.createdAt} > ${oneDayAgoSec}`,
     ))
@@ -332,6 +335,53 @@ async function scanUserTriggers(userId: string): Promise<ProactiveTrigger[]> {
     }
   }
 
+  // ── PROACTIVE GATHER TRIGGER — suggest gathering when multiple friends seem available ──
+  try {
+    const friendChats = userChats.filter(c =>
+      c.relationshipType === 'friend' || c.relationshipType === 'family'
+    )
+
+    // Count friends who were recently active (messaged in last 48h) and had positive/neutral mood
+    let activeFriendCount = 0
+    const activeFriendNames: string[] = []
+
+    for (const chat of friendChats) {
+      const lastMsg = db.select({ createdAt: schema.messages.createdAt, senderId: schema.messages.senderId })
+        .from(schema.messages)
+        .where(and(
+          eq(schema.messages.chatId, chat.chatId),
+          eq(schema.messages.visibility, 'normal'),
+        ))
+        .orderBy(desc(schema.messages.createdAt))
+        .limit(1)
+        .get()
+
+      if (!lastMsg || !lastMsg.createdAt) continue
+      const hoursSince = (now - new Date(lastMsg.createdAt).getTime()) / (1000 * 60 * 60)
+      if (hoursSince > 48) continue
+
+      // Check mood is not declining
+      try {
+        const trend = getMoodTrend(userId, chat.chatId)
+        if (trend && trend.trend === 'declining') continue
+      } catch {}
+
+      activeFriendCount++
+      activeFriendNames.push(chat.chatName || 'Друг')
+      if (activeFriendNames.length >= 5) break // cap
+    }
+
+    if (activeFriendCount >= 3) {
+      triggers.push({
+        userId,
+        chatId: '', // no specific chat
+        chatName: activeFriendNames.slice(0, 3).join(', '),
+        type: 'detected_need' as any,
+        context: `${activeFriendCount} друзей были активны за последние 2 дня: ${activeFriendNames.slice(0, 3).join(', ')}${activeFriendCount > 3 ? ` и ещё ${activeFriendCount - 3}` : ''}. Можно предложить собраться!`,
+      })
+    }
+  } catch {}
+
   return triggers
 }
 
@@ -461,6 +511,15 @@ async function generateAction(trigger: ProactiveTrigger): Promise<boolean> {
         type: 'suggestion',
         trigger: trigger.type,
       },
+    })
+
+    // Also log to activity feed
+    logAgentActivity(trigger.userId, {
+      type: 'nudge',
+      title: parsed.title,
+      body: parsed.body,
+      relatedChatId: trigger.chatId || undefined,
+      metadata: { trigger: trigger.type, draftMessage: parsed.draftMessage },
     })
 
     return true

@@ -7,6 +7,7 @@ import {
 import { useAgentDialogStore, type AgentDialog, type DialogType } from '../../stores/agentDialogStore'
 import AgentDialogDetail from './AgentDialogDetail'
 import AgentAutonomySettings from './AgentAutonomySettings'
+import PrivacyVaultSettings from './PrivacyVaultSettings'
 
 interface Props {
   open: boolean
@@ -86,7 +87,12 @@ export default function AgentDialogPanel({ open, onClose }: Props) {
         </div>
 
         {tab === 'settings' ? (
-          <AgentAutonomySettings />
+          <div className="flex-1 overflow-y-auto p-4 space-y-6">
+            <PrivacyVaultSettings />
+            <div className="border-t border-border pt-4">
+              <AgentAutonomySettings />
+            </div>
+          </div>
         ) : (
           <>
             {/* Filter tabs */}

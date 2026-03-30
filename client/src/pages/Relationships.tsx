@@ -5,6 +5,7 @@ import { useChatStore } from '../stores/chatStore'
 import { useAgentDialogStore } from '../stores/agentDialogStore'
 import AgentDialogPanel from '../components/agent/AgentDialogPanel'
 import AgentAutonomySettings from '../components/agent/AgentAutonomySettings'
+import PrivacyVaultSettings from '../components/agent/PrivacyVaultSettings'
 import {
   Search,
   Loader2,
@@ -947,8 +948,11 @@ export default function Relationships() {
                 <X size={18} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto">
-              <AgentAutonomySettings />
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
+              <PrivacyVaultSettings />
+              <div className="border-t border-border pt-4">
+                <AgentAutonomySettings />
+              </div>
             </div>
           </div>
         </div>

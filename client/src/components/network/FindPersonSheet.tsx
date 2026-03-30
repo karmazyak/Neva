@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import {
   X, Search, Loader2, MessageSquare, UserPlus, Star,
-  Sparkles, Send,
+  Sparkles, Send, Shuffle, Lock,
 } from 'lucide-react'
 import { useNetworkStore } from '../../stores/networkStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useNavigate } from 'react-router-dom'
-import type { Match } from '../../stores/networkStore'
+import { api } from '../../lib/api'
+import type { Match, MutualMatchResult } from '../../stores/networkStore'
 
 const SUGGESTION_CHIPS = [
   'Дизайнер',
@@ -20,35 +21,33 @@ const SUGGESTION_CHIPS = [
 export default function FindPersonSheet() {
   const navigate = useNavigate()
   const { setActiveChat } = useChatStore()
-  const { createNeed, triggerMatch } = useNetworkStore()
+  const { createNeed, triggerMatch, searchMutualMatch, initiateMutualMatch } = useNetworkStore()
 
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
   const [results, setResults] = useState<Match[] | null>(null)
+  const [mutualResults, setMutualResults] = useState<MutualMatchResult[]>([])
+  const [currentNeedId, setCurrentNeedId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [introLoading, setIntroLoading] = useState<string | null>(null) // offerId being processed
+  const [introResult, setIntroResult] = useState<{ targetName: string; status: string } | null>(null)
+  const [mutualMatchInitiated, setMutualMatchInitiated] = useState<Set<string>>(new Set())
 
   const handleSearch = async () => {
     if (!query.trim()) return
     setSearching(true)
     setError(null)
     setResults(null)
+    setMutualResults([])
+    setCurrentNeedId(null)
 
     try {
-      // Create a need from natural language, let AI parse the intent
-      const need = await createNeed({
-        description: query.trim(),
-        category: 'professional', // AI will refine this on the backend
-        urgency: 'whenever',
-        visibility: 'friends_of_friends',
-      })
-
-      if (need?.id) {
-        const matches = await triggerMatch(need.id)
-        setResults(matches || [])
-      } else {
-        setResults([])
-      }
+      // Use mutual match search (returns both mutual and one-way)
+      const { mutual, oneWay, needId } = await searchMutualMatch(query.trim())
+      setMutualResults(mutual)
+      setResults(oneWay)
+      if (needId) setCurrentNeedId(needId)
     } catch (err) {
       console.error('[FindPersonSheet] Search failed:', err)
       setError('Не удалось выполнить поиск. Попробуйте ещё раз.')
@@ -56,6 +55,16 @@ export default function FindPersonSheet() {
     } finally {
       setSearching(false)
     }
+  }
+
+  const handleInitiateMutualMatch = async (offerId: string) => {
+    if (!currentNeedId) return
+    setIntroLoading(offerId)
+    const ok = await initiateMutualMatch(currentNeedId, offerId)
+    if (ok) {
+      setMutualMatchInitiated(prev => new Set(prev).add(offerId))
+    }
+    setIntroLoading(null)
   }
 
   const handleChipClick = (chip: string) => {
@@ -68,11 +77,39 @@ export default function FindPersonSheet() {
     navigate('/')
   }
 
+  const handleRequestIntro = async (match: Match) => {
+    setIntroLoading(match.offerId)
+    try {
+      const res = await fetch('/api/agent/warm-intro', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${api.getToken()}`,
+        },
+        body: JSON.stringify({
+          targetUserId: match.providerId || match.userId,
+          mutualContactId: match.mutualContactId || '',
+          needDescription: query,
+        }),
+      })
+      const data = await res.json()
+      setIntroResult({ targetName: match.displayName || 'Контакт', status: data.status })
+    } catch (err) {
+      console.error('[FindPerson] Warm intro failed:', err)
+    } finally {
+      setIntroLoading(null)
+    }
+  }
+
   const handleClose = () => {
     setOpen(false)
     setQuery('')
     setResults(null)
+    setMutualResults([])
+    setCurrentNeedId(null)
     setError(null)
+    setIntroResult(null)
+    setMutualMatchInitiated(new Set())
   }
 
   // Separate results by social distance
@@ -189,9 +226,9 @@ export default function FindPersonSheet() {
           )}
 
           {/* Results */}
-          {results && !searching && (
+          {(results || mutualResults.length > 0) && !searching && (
             <>
-              {results.length === 0 ? (
+              {(results?.length === 0 && mutualResults.length === 0) ? (
                 <div className="flex flex-col items-center py-8 text-center">
                   <Search size={40} className="text-text-secondary/30 mb-3" />
                   <p className="text-sm text-text-secondary">Не нашёл среди знакомых</p>
@@ -199,6 +236,67 @@ export default function FindPersonSheet() {
                 </div>
               ) : (
                 <>
+                  {/* Mutual Matches — shown first with special styling */}
+                  {mutualResults.length > 0 && (
+                    <section className="space-y-2">
+                      <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider flex items-center gap-1.5">
+                        <Shuffle size={14} className="text-emerald-400" />
+                        Взаимные совпадения
+                        <span className="ml-1 text-[9px] font-normal text-emerald-400/70 bg-emerald-500/10 px-1.5 py-0.5 rounded-full">
+                          анонимно до подтверждения
+                        </span>
+                      </h3>
+                      {mutualResults.map((mm) => (
+                        <div key={mm.offerId} className="bg-gradient-to-r from-emerald-500/10 to-cyan-500/10 rounded-xl px-3.5 py-3 border border-emerald-500/20">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
+                              <Lock size={16} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium text-text-primary">Анонимный матч</div>
+                              <div className="text-xs text-text-secondary truncate mt-0.5">
+                                {mm.offerDescription}
+                              </div>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className="text-[10px] text-emerald-400">
+                                  {Math.round(mm.similarity * 100)}% совпадение
+                                </span>
+                                <span className="flex items-center gap-0.5">
+                                  {[1, 2, 3, 4, 5].map(s => (
+                                    <Star
+                                      key={s}
+                                      size={8}
+                                      className={s <= Math.round(mm.trustScore)
+                                        ? 'text-amber-400 fill-amber-400'
+                                        : 'text-text-secondary/30'
+                                      }
+                                    />
+                                  ))}
+                                </span>
+                                {mm.hasMutualContact && (
+                                  <span className="text-[10px] text-text-secondary">есть общие друзья</span>
+                                )}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleInitiateMutualMatch(mm.offerId)}
+                              disabled={introLoading === mm.offerId || mutualMatchInitiated.has(mm.offerId)}
+                              className="text-xs px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50 transition-colors flex-shrink-0 font-medium flex items-center gap-1.5"
+                            >
+                              {introLoading === mm.offerId ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : mutualMatchInitiated.has(mm.offerId) ? (
+                                'Отправлено'
+                              ) : (
+                                'Подтвердить'
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </section>
+                  )}
+
                   {/* Direct Contacts */}
                   {directContacts.length > 0 && (
                     <ResultSection
@@ -216,8 +314,12 @@ export default function FindPersonSheet() {
                       title="Через друзей"
                       icon={<UserPlus size={14} className="text-blue-400" />}
                       matches={throughFriends}
-                      onAction={() => {}}
+                      onAction={(matchId) => {
+                        const match = throughFriends.find(m => m.offerId === matchId)
+                        if (match) handleRequestIntro(match)
+                      }}
                       actionLabel="Попросить представить"
+                      loadingId={introLoading}
                     />
                   )}
 
@@ -233,11 +335,11 @@ export default function FindPersonSheet() {
                   )}
 
                   {/* If all in one bucket (no social distance info) */}
-                  {directContacts.length === 0 && throughFriends.length === 0 && networkWide.length === 0 && results.length > 0 && (
+                  {directContacts.length === 0 && throughFriends.length === 0 && networkWide.length === 0 && (results?.length || 0) > 0 && (
                     <ResultSection
                       title="Результаты"
                       icon={<Sparkles size={14} className="text-blue-400" />}
-                      matches={results}
+                      matches={results || []}
                       onAction={handleOpenChat}
                       actionLabel="Написать"
                     />
@@ -245,6 +347,18 @@ export default function FindPersonSheet() {
                 </>
               )}
             </>
+          )}
+
+          {introResult && (
+            <div className="mt-3 p-3 rounded-xl bg-green-500/10 border border-green-500/20 text-center">
+              <span className="text-sm text-green-400">
+                {introResult.status === 'consent_granted'
+                  ? `Вас представили ${introResult.targetName}!`
+                  : introResult.status === 'consent_pending'
+                  ? `Запрос на знакомство с ${introResult.targetName} отправлен`
+                  : `${introResult.targetName} отклонил знакомство`}
+              </span>
+            </div>
           )}
         </div>
       </div>
@@ -268,12 +382,14 @@ function ResultSection({
   matches,
   onAction,
   actionLabel,
+  loadingId,
 }: {
   title: string
   icon: React.ReactNode
   matches: Match[]
   onAction: (chatId: string) => void
   actionLabel: string
+  loadingId?: string | null
 }) {
   return (
     <section className="space-y-2">
@@ -287,6 +403,7 @@ function ResultSection({
           match={match}
           onAction={() => onAction(match.offerId)}
           actionLabel={actionLabel}
+          loading={loadingId === match.offerId}
         />
       ))}
     </section>
@@ -299,10 +416,12 @@ function MatchCard({
   match,
   onAction,
   actionLabel,
+  loading,
 }: {
   match: Match
   onAction: () => void
   actionLabel: string
+  loading?: boolean
 }) {
   return (
     <div className="bg-bg-hover rounded-xl px-3.5 py-3 border border-border">
@@ -345,8 +464,10 @@ function MatchCard({
         {/* Action */}
         <button
           onClick={onAction}
-          className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors flex-shrink-0 font-medium"
+          disabled={loading}
+          className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 disabled:opacity-50 transition-colors flex-shrink-0 font-medium flex items-center gap-1.5"
         >
+          {loading ? <Loader2 size={12} className="animate-spin" /> : null}
           {actionLabel}
         </button>
       </div>

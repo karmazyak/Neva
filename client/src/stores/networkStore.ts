@@ -29,7 +29,9 @@ export interface Match {
   socialDistance: number
   finalScore: number
   displayName?: string
+  mutualContactId?: string
   mutualContactName?: string
+  providerId?: string
 }
 
 export interface ConsentRequest {
@@ -42,11 +44,50 @@ export interface ConsentRequest {
   createdAt: string
 }
 
+export interface PrivacyVaultSettings {
+  shareInterests: boolean
+  shareExpertise: boolean
+  shareAvailability: boolean
+  shareMood: boolean
+  shareFacts: boolean
+  publicBio: string | null
+  publicInterests: string[]
+  publicExpertise: string[]
+  blockedUserIds: string[]
+}
+
+export interface MutualMatchResult {
+  offerId: string
+  offerDescription: string
+  similarity: number
+  trustScore: number
+  socialDistance: number
+  hasMutualContact: boolean
+  finalScore: number
+}
+
+export interface MutualMatchEntry {
+  id: string
+  side: 'requester' | 'provider'
+  needDescription?: string
+  offerDescription?: string
+  similarityScore?: number
+  socialDistance?: number
+  myConsent: string
+  otherConsent: string
+  status: string
+  partnerName?: string | null
+  partnerId?: string | null
+  createdAt: string
+}
+
 interface NetworkState {
   needs: Need[]
   offers: Offer[]
   matches: Match[]
   consentRequests: ConsentRequest[]
+  vault: PrivacyVaultSettings | null
+  mutualMatches: MutualMatchEntry[]
   loading: boolean
   sheetOpen: boolean
 
@@ -62,6 +103,14 @@ interface NetworkState {
   deleteOffer: (id: string) => Promise<void>
   triggerMatch: (needId: string) => Promise<Match[]>
   respondConsent: (requestId: string, approved: boolean) => Promise<void>
+  // Privacy Vault
+  loadVault: () => Promise<void>
+  updateVault: (updates: Partial<PrivacyVaultSettings>) => Promise<void>
+  // Mutual Match
+  searchMutualMatch: (description: string, category?: string, visibility?: string) => Promise<{ mutual: MutualMatchResult[]; oneWay: Match[]; needId?: string }>
+  initiateMutualMatch: (needId: string, offerId: string) => Promise<boolean>
+  respondMutualMatch: (mutualMatchId: string, approved: boolean) => Promise<boolean>
+  loadMutualMatches: () => Promise<void>
 }
 
 export const useNetworkStore = create<NetworkState>((set, get) => ({
@@ -69,6 +118,8 @@ export const useNetworkStore = create<NetworkState>((set, get) => ({
   offers: [],
   matches: [],
   consentRequests: [],
+  vault: null,
+  mutualMatches: [],
   loading: false,
   sheetOpen: false,
 
@@ -138,5 +189,93 @@ export const useNetworkStore = create<NetworkState>((set, get) => ({
   respondConsent: async (requestId, approved) => {
     await api.respondConsent(requestId, approved)
     set({ consentRequests: get().consentRequests.filter(c => c.id !== requestId) })
+  },
+
+  // ── Privacy Vault ─────────────────────────────────────────────────────
+
+  loadVault: async () => {
+    try {
+      const res = await fetch('/api/agent/vault', {
+        headers: { Authorization: `Bearer ${api.getToken()}` },
+      })
+      const data = await res.json()
+      set({ vault: data.vault })
+    } catch {}
+  },
+
+  updateVault: async (updates) => {
+    try {
+      const res = await fetch('/api/agent/vault', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${api.getToken()}`,
+        },
+        body: JSON.stringify(updates),
+      })
+      const data = await res.json()
+      if (data.ok) set({ vault: data.vault })
+    } catch {}
+  },
+
+  // ── Mutual Match ──────────────────────────────────────────────────────
+
+  searchMutualMatch: async (description, category = 'professional', visibility = 'friends_of_friends') => {
+    try {
+      const res = await fetch('/api/agent/mutual-match/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${api.getToken()}`,
+        },
+        body: JSON.stringify({ description, category, visibility }),
+      })
+      const data = await res.json()
+      return { mutual: data.mutual || [], oneWay: data.oneWay || [], needId: data.needId }
+    } catch {
+      return { mutual: [], oneWay: [] }
+    }
+  },
+
+  initiateMutualMatch: async (needId, offerId) => {
+    try {
+      const res = await fetch('/api/agent/mutual-match/initiate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${api.getToken()}`,
+        },
+        body: JSON.stringify({ needId, offerId }),
+      })
+      return res.ok
+    } catch {
+      return false
+    }
+  },
+
+  respondMutualMatch: async (mutualMatchId, approved) => {
+    try {
+      const res = await fetch(`/api/agent/mutual-match/${mutualMatchId}/respond`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${api.getToken()}`,
+        },
+        body: JSON.stringify({ approved }),
+      })
+      return res.ok
+    } catch {
+      return false
+    }
+  },
+
+  loadMutualMatches: async () => {
+    try {
+      const res = await fetch('/api/agent/mutual-matches', {
+        headers: { Authorization: `Bearer ${api.getToken()}` },
+      })
+      const data = await res.json()
+      set({ mutualMatches: data.matches || [] })
+    } catch {}
   },
 }))

@@ -2,8 +2,9 @@ import { db, schema } from '../db'
 import { eq, and, ne, inArray, sql } from 'drizzle-orm'
 import { cosineSimilarity, generateEmbedding } from './embeddings'
 import type { MatchCandidate, Visibility } from '../a2a/types'
+import { isBlockedBy } from '../a2a/privacy-vault'
 
-const SIMILARITY_THRESHOLD = 0.55
+const SIMILARITY_THRESHOLD = 0.35
 
 // ── Social Graph ────────────────────────────────────────────────────────────
 
@@ -189,4 +190,94 @@ export async function findMatchingOffers(
   }
 
   return candidates.sort((a, b) => b.finalScore - a.finalScore)
+}
+
+// ── Mutual Matching (bidirectional) ────────────────────────────────────────
+
+export interface MutualMatchCandidate extends MatchCandidate {
+  /** The need from requester side */
+  needDescription: string
+  needCategory: string
+}
+
+/**
+ * Find bidirectional matches: the requester's need matches the provider's offer
+ * AND the provider has their own active need that could match the requester's offers.
+ * This creates truly mutual connections.
+ *
+ * Falls back to one-way matches if no mutual ones exist (with a flag).
+ */
+export async function findMutualMatches(
+  needId: string,
+  needUserId: string,
+  needDescription: string,
+  needEmbedding: number[] | null,
+  needCategory: string,
+  visibility: Visibility,
+): Promise<{ mutual: MutualMatchCandidate[]; oneWay: MatchCandidate[] }> {
+  // Step 1: Find one-way matches (requester's need → provider's offers)
+  const oneWayCandidates = await findMatchingOffers(
+    needId, needUserId, needDescription, needEmbedding, needCategory, visibility,
+  )
+
+  // Step 2: For each candidate, check if they have active needs that match our offers
+  const mutual: MutualMatchCandidate[] = []
+  const oneWay: MatchCandidate[] = []
+
+  // Load requester's offers
+  const requesterOffers = db.select()
+    .from(schema.offers)
+    .where(and(
+      eq(schema.offers.userId, needUserId),
+      eq(schema.offers.availability, 'available'),
+    ))
+    .all()
+
+  for (const candidate of oneWayCandidates) {
+    // Skip blocked users
+    if (isBlockedBy(candidate.userId, needUserId) || isBlockedBy(needUserId, candidate.userId)) {
+      continue
+    }
+
+    // Check if provider has active needs
+    const providerNeeds = db.select()
+      .from(schema.needs)
+      .where(and(
+        eq(schema.needs.userId, candidate.userId),
+        eq(schema.needs.status, 'active'),
+      ))
+      .all()
+
+    let isMutual = false
+
+    for (const providerNeed of providerNeeds) {
+      if (!providerNeed.embedding) continue
+
+      // Check if any of requester's offers match provider's needs
+      for (const offer of requesterOffers) {
+        if (!offer.embedding) continue
+        const sim = cosineSimilarity(
+          providerNeed.embedding as number[],
+          offer.embedding as number[],
+        )
+        if (sim >= SIMILARITY_THRESHOLD) {
+          isMutual = true
+          break
+        }
+      }
+      if (isMutual) break
+    }
+
+    if (isMutual) {
+      mutual.push({
+        ...candidate,
+        needDescription,
+        needCategory,
+      })
+    } else {
+      oneWay.push(candidate)
+    }
+  }
+
+  return { mutual, oneWay }
 }

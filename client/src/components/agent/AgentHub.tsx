@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Users, Search, ChevronRight, Undo2, CheckCircle, XCircle, Loader2, MapPin, Calendar, PartyPopper, X, Send } from 'lucide-react'
+import { Users, Search, ChevronRight, Undo2, CheckCircle, XCircle, Loader2, MapPin, Calendar, PartyPopper, X, Send, Heart, UserPlus, MessageCircle, Bell } from 'lucide-react'
 import { useAgentHubStore } from '../../stores/agentHubStore'
 import type { AgentActivity, GatherStatus } from '../../stores/agentHubStore'
 
@@ -53,6 +53,13 @@ function ActivityItem({ activity }: { activity: AgentActivity }) {
     ? (activity.metadata?.decision === 'deny' ? <XCircle className="w-3.5 h-3.5 text-red-400" /> : <CheckCircle className="w-3.5 h-3.5 text-green-400" />)
     : activity.type === 'gather_started' ? <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
     : activity.type === 'gather_result' ? <PartyPopper className="w-3.5 h-3.5 text-purple-400" />
+    : activity.type === 'intro_requested' ? <UserPlus className="w-3.5 h-3.5 text-blue-400" />
+    : activity.type === 'intro_complete' ? <UserPlus className="w-3.5 h-3.5 text-green-400" />
+    : activity.type === 'interest_poll_started' ? <MessageCircle className="w-3.5 h-3.5 text-cyan-400" />
+    : activity.type === 'interest_poll_result' ? <MessageCircle className="w-3.5 h-3.5 text-cyan-300" />
+    : activity.type === 'nudge' && activity.metadata?.trigger === 'mood' ? <Heart className="w-3.5 h-3.5 text-pink-400" />
+    : activity.type === 'nudge' && activity.metadata?.trigger === 'detected_need' ? <Users className="w-3.5 h-3.5 text-cyan-400" />
+    : activity.type === 'nudge' ? <Bell className="w-3.5 h-3.5 text-amber-400" />
     : activity.type === 'undo' ? <Undo2 className="w-3.5 h-3.5 text-gray-400" />
     : <CheckCircle className="w-3.5 h-3.5 text-gray-400" />
 
@@ -212,23 +219,52 @@ function GatherProgress({ gather, onCancel }: { gather: GatherStatus; onCancel: 
   return null
 }
 
+// ── Filter Chips ────────────────────────────────────────────────────────────
+
+const ACTIVITY_FILTERS = [
+  { key: 'all', label: 'Все' },
+  { key: 'auto_response', label: 'Авто-ответы' },
+  { key: 'gather', label: 'Сборы' },
+  { key: 'nudge', label: 'Подсказки' },
+  { key: 'intro', label: 'Знакомства' },
+  { key: 'interest', label: 'Опросы' },
+] as const
+
+function matchesFilter(a: AgentActivity, filter: string): boolean {
+  if (filter === 'all') return true
+  if (filter === 'auto_response') return a.type === 'auto_response'
+  if (filter === 'gather') return a.type === 'gather_started' || a.type === 'gather_result'
+  if (filter === 'nudge') return a.type === 'nudge'
+  if (filter === 'intro') return a.type === 'intro_requested' || a.type === 'intro_complete'
+  if (filter === 'interest') return a.type === 'interest_poll_started' || a.type === 'interest_poll_result'
+  return true
+}
+
 // ── Activity Feed Sheet ─────────────────────────────────────────────────────
 
 function ActivityFeedSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { activities, loadActivities } = useAgentHubStore()
+  const [filter, setFilter] = useState('all')
 
   useEffect(() => {
-    if (open) loadActivities(50)
+    if (open) loadActivities(100)
   }, [open])
 
   if (!open) return null
+
+  const filtered = activities.filter(a => matchesFilter(a, filter))
+
+  // Stats
+  const autoCount = activities.filter(a => a.type === 'auto_response' && !a.undoneAt).length
+  const undoneCount = activities.filter(a => a.undoneAt).length
+  const totalCount = activities.length
 
   // Group by date
   const today = new Date().toDateString()
   const yesterday = new Date(Date.now() - 86400000).toDateString()
 
   const grouped: Record<string, AgentActivity[]> = {}
-  for (const a of activities) {
+  for (const a of filtered) {
     const dateStr = new Date(a.createdAt).toDateString()
     const label = dateStr === today ? 'СЕГОДНЯ' : dateStr === yesterday ? 'ВЧЕРА' : new Date(a.createdAt).toLocaleDateString('ru')
     if (!grouped[label]) grouped[label] = []
@@ -237,7 +273,7 @@ function ActivityFeedSheet({ open, onClose }: { open: boolean; onClose: () => vo
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50" onClick={onClose}>
-      <div className="absolute inset-x-0 bottom-0 max-h-[80vh] bg-[#1a1a2e] rounded-t-2xl overflow-hidden flex flex-col"
+      <div className="absolute inset-x-0 bottom-0 max-h-[85vh] bg-[#1a1a2e] rounded-t-2xl overflow-hidden flex flex-col"
         onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 bg-gray-600 rounded-full mx-auto mt-3" />
         <div className="flex items-center justify-between px-5 pt-3 pb-2">
@@ -245,6 +281,40 @@ function ActivityFeedSheet({ open, onClose }: { open: boolean; onClose: () => vo
           <button onClick={onClose} className="text-gray-400 hover:text-white">
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* Stats bar */}
+        {totalCount > 0 && (
+          <div className="flex gap-3 px-5 pb-2">
+            <span className="text-[10px] text-gray-500">
+              Всего: <span className="text-gray-300">{totalCount}</span>
+            </span>
+            <span className="text-[10px] text-gray-500">
+              Авто: <span className="text-green-400">{autoCount}</span>
+            </span>
+            {undoneCount > 0 && (
+              <span className="text-[10px] text-gray-500">
+                Отменено: <span className="text-amber-400">{undoneCount}</span>
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Filter chips */}
+        <div className="flex gap-1.5 px-5 pb-3 overflow-x-auto no-scrollbar">
+          {ACTIVITY_FILTERS.map(f => (
+            <button
+              key={f.key}
+              onClick={() => setFilter(f.key)}
+              className={`text-[11px] px-2.5 py-1 rounded-full whitespace-nowrap transition-colors ${
+                filter === f.key
+                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                  : 'bg-white/5 text-gray-400 border border-white/5 hover:bg-white/10'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 pb-safe">
@@ -256,8 +326,10 @@ function ActivityFeedSheet({ open, onClose }: { open: boolean; onClose: () => vo
               </div>
             </div>
           ))}
-          {activities.length === 0 && (
-            <div className="text-center text-gray-500 py-12 text-sm">Агент ещё ничего не делал</div>
+          {filtered.length === 0 && (
+            <div className="text-center text-gray-500 py-12 text-sm">
+              {filter === 'all' ? 'Агент ещё ничего не делал' : 'Нет действий этого типа'}
+            </div>
           )}
         </div>
       </div>

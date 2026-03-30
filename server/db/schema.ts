@@ -540,6 +540,53 @@ export const agentActivities = sqliteTable('agent_activities', {
   createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
 })
 
+// ── Privacy Vault (user-controlled agent disclosure rules) ─────────────────
+
+export const privacyVault = sqliteTable('privacy_vault', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  // What the agent can reveal to the network
+  shareInterests: integer('share_interests', { mode: 'boolean' }).default(true),
+  shareExpertise: integer('share_expertise', { mode: 'boolean' }).default(true),
+  shareAvailability: integer('share_availability', { mode: 'boolean' }).default(true),
+  shareMood: integer('share_mood', { mode: 'boolean' }).default(false),
+  shareFacts: integer('share_facts', { mode: 'boolean' }).default(false),
+  // Public bio / interests the user explicitly wants to share (whitelist)
+  publicBio: text('public_bio'),
+  publicInterests: text('public_interests', { mode: 'json' }).$type<string[]>().default([]),
+  publicExpertise: text('public_expertise', { mode: 'json' }).$type<string[]>().default([]),
+  // Blocked users — agent NEVER responds to them
+  blockedUserIds: text('blocked_user_ids', { mode: 'json' }).$type<string[]>().default([]),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+})
+
+// ── Mutual Matches (bidirectional anonymous matching) ──────────────────────
+
+export const mutualMatches = sqliteTable('mutual_matches', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  // Side A
+  needId: text('need_id').notNull().references(() => needs.id),
+  requesterId: text('requester_id').notNull().references(() => users.id),
+  // Side B
+  offerId: text('offer_id').notNull().references(() => offers.id),
+  providerId: text('provider_id').notNull().references(() => users.id),
+  // Matching metadata
+  similarityScore: real('similarity_score'),
+  socialDistance: integer('social_distance'),
+  mutualContactId: text('mutual_contact_id'),
+  // Consent status — both must approve before identities are revealed
+  requesterConsent: text('requester_consent', { enum: ['pending', 'approved', 'declined'] }).notNull().default('pending'),
+  providerConsent: text('provider_consent', { enum: ['pending', 'approved', 'declined'] }).notNull().default('pending'),
+  // Dialog IDs for tracking consent
+  requesterDialogId: text('requester_dialog_id'),
+  providerDialogId: text('provider_dialog_id'),
+  // Overall status
+  status: text('status', { enum: ['pending', 'revealed', 'declined', 'expired'] }).notNull().default('pending'),
+  revealedAt: integer('revealed_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).default(sql`(unixepoch())`),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
+})
+
 // ── Type exports ────────────────────────────────────────────────────────────
 
 export type AgentActivity = typeof agentActivities.$inferSelect
@@ -556,3 +603,5 @@ export type A2AApp = typeof a2aApps.$inferSelect
 export type AgentDialog = typeof agentDialogs.$inferSelect
 export type AgentDialogMessage = typeof agentDialogMessages.$inferSelect
 export type AgentAutonomyRule = typeof agentAutonomyRules.$inferSelect
+export type PrivacyVault = typeof privacyVault.$inferSelect
+export type MutualMatch = typeof mutualMatches.$inferSelect

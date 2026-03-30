@@ -313,6 +313,65 @@ function Lightbox({ images, startIndex, onClose }: { images: string[]; startInde
   )
 }
 
+function GatherResultCard({ data }: { data: any }) {
+  const plan = data.plan || {}
+  const available = data.available || []
+  const unavailable = data.unavailable || []
+
+  return (
+    <div className="w-[280px] rounded-xl overflow-hidden border border-purple-500/20">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-purple-500/20 to-pink-500/20 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">🎉</span>
+          <div>
+            <div className="text-sm font-semibold text-white">Компания собрана!</div>
+            <div className="text-xs text-gray-400">{data.initiatorName} организует</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Plan */}
+      <div className="px-4 py-3 space-y-2 bg-white/5">
+        {plan.what && (
+          <div className="flex items-center gap-2 text-sm text-gray-200">
+            <span className="text-purple-400">📋</span> {plan.what}
+          </div>
+        )}
+        {plan.when && (
+          <div className="flex items-center gap-2 text-sm text-gray-200">
+            <span className="text-purple-400">📅</span> {plan.when}
+          </div>
+        )}
+        {plan.where && (
+          <div className="flex items-center gap-2 text-sm text-gray-200">
+            <span className="text-purple-400">📍</span> {plan.where}
+          </div>
+        )}
+      </div>
+
+      {/* Participants */}
+      <div className="px-4 py-3 border-t border-white/5">
+        <div className="text-xs font-semibold text-gray-400 mb-2">
+          УЧАСТНИКИ ({available.length})
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {available.map((f: any, i: number) => (
+            <span key={i} className="text-xs px-2 py-1 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
+              {f.name}
+            </span>
+          ))}
+        </div>
+        {unavailable.length > 0 && (
+          <div className="mt-2 text-xs text-gray-500">
+            Не могут: {unavailable.map((f: any) => f.name).join(', ')}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥']
 
 export default function MessageBubble({ message, isOwn, showAvatar, onAction, onContextMenu, onAIAction, onReply, onEdit, onForward, onReaction, onSave, selectMode, selected, onToggleSelect, highlightTerms, replyToMessage, onScrollToMessage }: MessageBubbleProps) {
@@ -350,6 +409,16 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
 
   // Render message content based on type
   const renderContent = () => {
+    // A2A Gather Result Card
+    if (message.type === 'system' && message.metadata?.cardType === 'gather_result') {
+      try {
+        const data = JSON.parse(message.content)
+        return <GatherResultCard data={data} />
+      } catch {
+        return <p className="text-text-secondary italic text-sm">Результат сбора компании</p>
+      }
+    }
+
     // Media group: multiple images/videos with optional caption
     if (message.type === 'media_group') {
       const media = (message.metadata?.media || []) as MediaItem[]
@@ -461,6 +530,15 @@ export default function MessageBubble({ message, isOwn, showAvatar, onAction, on
       <p className="text-text-primary whitespace-pre-wrap break-words text-[15px] leading-[1.35]">
         {rendered}
       </p>
+    )
+  }
+
+  // System message cards (A2A results, etc.)
+  if (message.type === 'system' && message.metadata?.cardType) {
+    return (
+      <div className="flex justify-center message-enter px-2 my-2">
+        {renderContent()}
+      </div>
     )
   }
 
